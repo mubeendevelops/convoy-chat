@@ -19,3 +19,11 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+// UserSummary is the safe, minimal view of a user embedded in other API and
+// WebSocket payloads (room members, message authors, presence events).
+type UserSummary struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	AvatarURL *string   `json:"avatar_url,omitempty"`
+}

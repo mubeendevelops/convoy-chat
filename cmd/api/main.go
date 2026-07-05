@@ -72,6 +72,13 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware(cfg.JWTSecret))
 			r.Get("/users/{user_id}", handlers.GetUser(st))
+
+			r.Post("/rooms", handlers.CreateRoom(st))
+			r.Get("/rooms", handlers.ListRooms(st))
+			r.Get("/rooms/{room_id}", handlers.GetRoom(st))
+			r.Get("/rooms/{room_id}/members", handlers.ListRoomMembers(st))
+			r.Post("/rooms/{room_id}/invite", handlers.InviteMember(st))
+			r.Post("/rooms/{room_id}/leave", handlers.LeaveRoom(st))
 		})
 	})
 
