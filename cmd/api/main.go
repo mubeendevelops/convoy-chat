@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/mubeendevelops/convoy-chat/internal/auth"
 	"github.com/mubeendevelops/convoy-chat/internal/config"
 	"github.com/mubeendevelops/convoy-chat/internal/handlers"
 	"github.com/mubeendevelops/convoy-chat/internal/store"
@@ -63,6 +64,16 @@ func main() {
 	}))
 
 	r.Get("/health", handlers.Health(st))
+
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/auth/signup", handlers.Signup(st, cfg.JWTSecret, cfg.JWTTTL))
+		r.Post("/auth/login", handlers.Login(st, cfg.JWTSecret, cfg.JWTTTL))
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.Middleware(cfg.JWTSecret))
+			r.Get("/users/{user_id}", handlers.GetUser(st))
+		})
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
