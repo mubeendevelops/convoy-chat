@@ -1,0 +1,10 @@
+DROP INDEX IF EXISTS idx_rooms_type;
+DROP INDEX IF EXISTS idx_rooms_creator_id;
+DROP INDEX IF EXISTS idx_room_members_user_id;
+DROP INDEX IF EXISTS idx_room_members_room_id_joined_at;
+DROP INDEX IF EXISTS idx_messages_room_id_created_at;
+DROP INDEX IF EXISTS idx_messages_user_id;
+DROP INDEX IF EXISTS idx_messages_created_at;
+DROP INDEX IF EXISTS idx_message_reactions_message_id;
+DROP INDEX IF EXISTS idx_message_read_receipts_user_id_read_at;
+DROP INDEX IF EXISTS idx_user_presence_status_last_seen_at;
