@@ -18,6 +18,7 @@ import (
 	"github.com/mubeendevelops/convoy-chat/internal/config"
 	"github.com/mubeendevelops/convoy-chat/internal/handlers"
 	"github.com/mubeendevelops/convoy-chat/internal/store"
+	"github.com/mubeendevelops/convoy-chat/internal/websocket"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -50,6 +51,11 @@ func main() {
 	st := store.New(db, rdb)
 	defer st.Close()
 
+	// The Hub owns all real-time connection state in a single goroutine; it
+	// stops when ctx is cancelled (graceful shutdown).
+	hub := websocket.NewHub(logger)
+	go hub.Run(ctx)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -64,6 +70,10 @@ func main() {
 	}))
 
 	r.Get("/health", handlers.Health(st))
+
+	// WebSocket connect authenticates via ?token= before the upgrade, so it
+	// sits outside the Bearer-header auth middleware group below.
+	r.Get("/ws", websocket.Handler(hub, cfg.JWTSecret, cfg.CORSAllowedOrigins, logger))
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/signup", handlers.Signup(st, cfg.JWTSecret, cfg.JWTTTL))
