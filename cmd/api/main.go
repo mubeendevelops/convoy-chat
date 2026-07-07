@@ -79,6 +79,10 @@ func main() {
 			r.Get("/rooms/{room_id}/members", handlers.ListRoomMembers(st))
 			r.Post("/rooms/{room_id}/invite", handlers.InviteMember(st))
 			r.Post("/rooms/{room_id}/leave", handlers.LeaveRoom(st))
+
+			r.Get("/rooms/{room_id}/messages", handlers.ListMessages(st))
+			r.Post("/rooms/{room_id}/messages", handlers.SendMessage(st))
+			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st))
 		})
 	})
 

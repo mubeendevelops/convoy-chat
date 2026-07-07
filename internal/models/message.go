@@ -1,0 +1,46 @@
+package models
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type MessageType string
+
+const (
+	MessageTypeText   MessageType = "text"
+	MessageTypeImage  MessageType = "image"
+	MessageTypeFile   MessageType = "file"
+	MessageTypeSystem MessageType = "system"
+)
+
+// Message mirrors the messages table.
+type Message struct {
+	ID          uuid.UUID       `json:"id"`
+	RoomID      uuid.UUID       `json:"room_id"`
+	UserID      uuid.UUID       `json:"user_id"`
+	Content     string          `json:"content"`
+	MessageType MessageType     `json:"message_type"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	DeletedAt   *time.Time      `json:"deleted_at,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+// MessageWithAuthor is a message row joined with the author's public user
+// summary, for history responses and message-send responses. Content is nil
+// when the message has been soft-deleted; callers render a placeholder
+// rather than the original text, which is retained in the database but
+// never served back through this shape.
+type MessageWithAuthor struct {
+	ID          uuid.UUID   `json:"id"`
+	RoomID      uuid.UUID   `json:"room_id"`
+	User        UserSummary `json:"user"`
+	Content     *string     `json:"content"`
+	MessageType MessageType `json:"message_type"`
+	DeletedAt   *time.Time  `json:"deleted_at,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+}
