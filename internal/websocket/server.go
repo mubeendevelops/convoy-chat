@@ -30,6 +30,14 @@ type Server struct {
 	origins []string
 	logger  *slog.Logger
 
+	// typing tracks per-(room,user) auto-expire timers for typing.start; see
+	// typing.go.
+	typing *typingTracker
+
+	// disconnects carries presenceDisconnectEvents from the Hub goroutine
+	// (which can't do I/O) to processDisconnects (which does); see presence.go.
+	disconnects chan presenceDisconnectEvent
+
 	// runCtx is the base context for store calls made while dispatching frames;
 	// set by Run before any connection is accepted.
 	runCtx context.Context
@@ -41,22 +49,29 @@ func NewServer(st *store.Store, secret string, origins []string, logger *slog.Lo
 	hub := NewHub(logger)
 	broker := NewBroker(st, hub, logger)
 	hub.SetSubscriber(broker)
-	return &Server{
-		store:   st,
-		hub:     hub,
-		broker:  broker,
-		secret:  secret,
-		origins: origins,
-		logger:  logger,
-		runCtx:  context.Background(),
+
+	srv := &Server{
+		store:       st,
+		hub:         hub,
+		broker:      broker,
+		secret:      secret,
+		origins:     origins,
+		logger:      logger,
+		typing:      newTypingTracker(),
+		disconnects: make(chan presenceDisconnectEvent, disconnectBuffer),
+		runCtx:      context.Background(),
 	}
+	hub.SetPresenceNotifier(srv)
+	return srv
 }
 
-// Run starts the Hub and Broker goroutines. They stop when ctx is cancelled.
+// Run starts the Hub, Broker, and presence-disconnect goroutines. They stop
+// when ctx is cancelled.
 func (s *Server) Run(ctx context.Context) {
 	s.runCtx = ctx
 	go s.hub.Run(ctx)
 	go s.broker.Run(ctx)
+	go s.processDisconnects(ctx)
 }
 
 // Handler returns the GET /ws endpoint. It authenticates via the ?token= query
@@ -116,6 +131,15 @@ func (s *Server) Handler() http.HandlerFunc {
 		s.hub.Register(client)
 		go client.writePump()
 		go client.readPump()
+
+		// Presence bookkeeping takes a Redis/Postgres round trip; run it after
+		// the pumps start so it never delays the handshake or the client's
+		// first messages.
+		go func() {
+			pctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+			defer cancel()
+			s.presenceOnline(pctx, userID)
+		}()
 	}
 }
 

@@ -33,6 +33,12 @@ func (s *Server) dispatch(c *Client, data []byte) {
 		s.handleRoomLeave(c, env)
 	case eventMessageSend:
 		s.handleMessageSend(c, env)
+	case eventTypingStart:
+		s.handleTypingStart(c, env)
+	case eventTypingStop:
+		s.handleTypingStop(c, env)
+	case eventPresenceUpdate:
+		s.handlePresenceUpdate(c, env)
 	case "":
 		c.sendError("invalid_input", "missing event type")
 	default:
@@ -150,6 +156,75 @@ func (s *Server) handleMessageSend(c *Client, env inboundEnvelope) {
 			ReadBy:    []uuid.UUID{},
 		},
 	})
+}
+
+// handleTypingStart gates on active membership (consistent with room.join and
+// message.send) and broadcasts user.typing(is_typing:true). It also arms an
+// auto-expire timer so a dropped typing.stop (tab closed mid-keystroke,
+// network drop) still clears within typingTimeout instead of leaving the
+// indicator stuck — see typing.go.
+func (s *Server) handleTypingStart(c *Client, env inboundEnvelope) {
+	roomID, err := uuid.Parse(env.RoomID)
+	if err != nil {
+		c.sendError("invalid_input", "room_id must be a valid UUID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+	defer cancel()
+
+	if _, err := s.store.GetMembership(ctx, roomID, c.userID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.sendError("forbidden", "not a member of this room")
+			return
+		}
+		s.logger.Error("ws typing.start membership check failed", "user_id", c.userID, "room_id", roomID, "error", err)
+		c.sendError("internal_error", "failed to verify membership")
+		return
+	}
+
+	key := typingKey{RoomID: roomID, UserID: c.userID}
+	s.typing.Start(key, func() {
+		pctx, pcancel := context.WithTimeout(s.runCtx, dbTimeout)
+		defer pcancel()
+		s.publish(pctx, roomID, userTypingEvent{Type: eventUserTyping, UserID: c.userID, RoomID: roomID, IsTyping: false})
+	})
+
+	s.publish(ctx, roomID, userTypingEvent{Type: eventUserTyping, UserID: c.userID, RoomID: roomID, IsTyping: true})
+}
+
+// handleTypingStop cancels the auto-expire timer and broadcasts
+// user.typing(is_typing:false) immediately. Like room.leave, it doesn't gate
+// on membership — stopping is always safe to allow.
+func (s *Server) handleTypingStop(c *Client, env inboundEnvelope) {
+	roomID, err := uuid.Parse(env.RoomID)
+	if err != nil {
+		c.sendError("invalid_input", "room_id must be a valid UUID")
+		return
+	}
+
+	s.typing.Stop(typingKey{RoomID: roomID, UserID: c.userID})
+
+	ctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+	defer cancel()
+	s.publish(ctx, roomID, userTypingEvent{Type: eventUserTyping, UserID: c.userID, RoomID: roomID, IsTyping: false})
+}
+
+// handlePresenceUpdate applies an explicit online/away/offline change and
+// announces it to every room the caller belongs to (presence is account-wide,
+// not room-scoped — see presence.go).
+func (s *Server) handlePresenceUpdate(c *Client, env inboundEnvelope) {
+	status := models.PresenceStatus(env.Status)
+	switch status {
+	case models.PresenceOnline, models.PresenceAway, models.PresenceOffline:
+	default:
+		c.sendError("invalid_input", `status must be "online", "away", or "offline"`)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+	defer cancel()
+	s.presenceUpdate(ctx, c.userID, status)
 }
 
 // publish marshals event and publishes it to the room's Redis channel for

@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -83,13 +84,16 @@ func (c *Client) readPump() {
 	}
 }
 
-// writePump owns all writes to the connection: it drains the send queue and
-// emits periodic pings for keepalive. It exits when the Hub closes send (a
-// clean unregister) or any write fails, closing the connection on the way out.
+// writePump owns all writes to the connection: it drains the send queue,
+// emits periodic pings for keepalive, and refreshes this connection's
+// presence TTL. It exits when the Hub closes send (a clean unregister) or any
+// write fails, closing the connection on the way out.
 func (c *Client) writePump() {
-	ticker := time.NewTicker(pingPeriod)
+	pingTicker := time.NewTicker(pingPeriod)
+	heartbeatTicker := time.NewTicker(presenceHeartbeatInterval)
 	defer func() {
-		ticker.Stop()
+		pingTicker.Stop()
+		heartbeatTicker.Stop()
 		_ = c.conn.Close()
 	}()
 
@@ -105,11 +109,20 @@ func (c *Client) writePump() {
 			if err := c.conn.WriteMessage(gws.TextMessage, payload); err != nil {
 				return
 			}
-		case <-ticker.C:
+		case <-pingTicker.C:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(gws.PingMessage, nil); err != nil {
 				return
 			}
+		case <-heartbeatTicker.C:
+			// Off in its own goroutine so a slow Redis round trip can never
+			// delay this connection's pings or message delivery; bounded by
+			// dbTimeout so stragglers can't accumulate unboundedly.
+			go func() {
+				ctx, cancel := context.WithTimeout(c.srv.runCtx, dbTimeout)
+				defer cancel()
+				c.srv.presenceHeartbeat(ctx, c.userID)
+			}()
 		}
 	}
 }

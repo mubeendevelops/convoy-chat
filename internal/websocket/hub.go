@@ -43,6 +43,12 @@ type Hub struct {
 	// Run via SetSubscriber; read only from the Run goroutine thereafter.
 	subscriber roomSubscriber
 
+	// presence (optional) is told when a client disconnects, along with the
+	// rooms it had joined, so presence state and room-departure events can be
+	// updated off the Hub goroutine. Set once before Run via
+	// SetPresenceNotifier; read only from the Run goroutine thereafter.
+	presence presenceNotifier
+
 	// clients and rooms are owned exclusively by the Run goroutine. Never read
 	// or write them from anywhere else.
 	clients map[*Client]struct{}
@@ -72,8 +78,19 @@ type roomSubscriber interface {
 	Unsubscribe(roomID uuid.UUID)
 }
 
+// presenceNotifier is told when a client disconnects, along with the rooms it
+// had joined, so presence/room-departure bookkeeping (Redis + Postgres + a
+// Redis Pub/Sub publish) can happen off the Hub goroutine. Implemented by
+// *Server; nil in tests that don't need presence.
+type presenceNotifier interface {
+	ClientDisconnected(userID uuid.UUID, rooms []uuid.UUID)
+}
+
 // SetSubscriber wires the Redis room subscriber. Call once, before Run.
 func (h *Hub) SetSubscriber(s roomSubscriber) { h.subscriber = s }
+
+// SetPresenceNotifier wires presence/room-departure handling. Call once, before Run.
+func (h *Hub) SetPresenceNotifier(p presenceNotifier) { h.presence = p }
 
 // NewHub constructs a Hub. Call Run (once) to start its owning goroutine.
 func NewHub(logger *slog.Logger) *Hub {
@@ -160,10 +177,15 @@ func (h *Hub) removeClient(c *Client) {
 		return
 	}
 	delete(h.clients, c)
+	rooms := make([]uuid.UUID, 0, len(c.rooms))
 	for roomID := range c.rooms {
+		rooms = append(rooms, roomID)
 		h.detach(roomID, c)
 	}
 	close(c.send)
+	if h.presence != nil {
+		h.presence.ClientDisconnected(c.userID, rooms)
+	}
 	h.logger.Info("ws client unregistered", "user_id", c.userID, "clients", len(h.clients))
 }
 

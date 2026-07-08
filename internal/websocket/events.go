@@ -10,27 +10,34 @@ import (
 
 // Client → server event type tags.
 const (
-	eventRoomJoin    = "room.join"
-	eventRoomLeave   = "room.leave"
-	eventMessageSend = "message.send"
+	eventRoomJoin       = "room.join"
+	eventRoomLeave      = "room.leave"
+	eventMessageSend    = "message.send"
+	eventTypingStart    = "typing.start"
+	eventTypingStop     = "typing.stop"
+	eventPresenceUpdate = "presence.update"
 )
 
 // Server → client event type tags.
 const (
-	eventError      = "error"
-	eventMessageNew = "message.new"
-	eventUserJoined = "user.joined"
-	eventUserLeft   = "user.left"
+	eventError             = "error"
+	eventMessageNew        = "message.new"
+	eventUserJoined        = "user.joined"
+	eventUserLeft          = "user.left"
+	eventUserTyping        = "user.typing"
+	eventUserStatusChanged = "user.status_changed"
 )
 
 // inboundEnvelope decodes a client frame. type + room_id route every event;
-// content + message_type are only read for message.send. Typing/presence/read
-// events add their own fields with the message-routing follow-ons (Phase 6/7).
+// content + message_type are only read for message.send; status is only read
+// for presence.update. Read-receipt/reaction events add their own fields in
+// Phase 7.
 type inboundEnvelope struct {
 	Type        string `json:"type"`
 	RoomID      string `json:"room_id"`
 	Content     string `json:"content"`
 	MessageType string `json:"message_type"`
+	Status      string `json:"status"`
 }
 
 // errorEvent is the server's {"type":"error","code","message"} envelope.
@@ -77,4 +84,26 @@ type userLeftEvent struct {
 	Type   string    `json:"type"`
 	UserID uuid.UUID `json:"user_id"`
 	RoomID uuid.UUID `json:"room_id"`
+}
+
+// userTypingEvent matches {"type":"user.typing","user_id","room_id","is_typing"}.
+// is_typing is an addition beyond the context file's shape (recorded in
+// plan.md Decisions): the documented shape has no way to distinguish a start
+// from a stop, so a receiver can't tell "still typing, keep waiting" from
+// "stopped" without it — needed for typing.stop, and for the server-side
+// auto-expire of a dropped stop to be observable at all.
+type userTypingEvent struct {
+	Type     string    `json:"type"`
+	UserID   uuid.UUID `json:"user_id"`
+	RoomID   uuid.UUID `json:"room_id"`
+	IsTyping bool      `json:"is_typing"`
+}
+
+// userStatusChangedEvent matches
+// {"type":"user.status_changed","user_id","status","last_seen_at"}.
+type userStatusChangedEvent struct {
+	Type       string                `json:"type"`
+	UserID     uuid.UUID             `json:"user_id"`
+	Status     models.PresenceStatus `json:"status"`
+	LastSeenAt time.Time             `json:"last_seen_at"`
 }
