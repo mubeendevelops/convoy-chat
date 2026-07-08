@@ -53,7 +53,7 @@ func (s *Store) CreateChannel(ctx context.Context, creatorID uuid.UUID, name str
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	room := &models.Room{
 		ID:          uuid.New(),
@@ -95,7 +95,7 @@ func (s *Store) GetOrCreateDirectRoom(ctx context.Context, userA, userB uuid.UUI
 	if err != nil {
 		return nil, false, fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	const lockStmt = `SELECT pg_advisory_xact_lock(hashtextextended(least($1::text, $2::text) || ':' || greatest($1::text, $2::text), 0))`
 	if _, err := tx.Exec(ctx, lockStmt, userA, userB); err != nil {

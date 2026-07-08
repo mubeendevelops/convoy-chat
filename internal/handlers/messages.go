@@ -23,6 +23,63 @@ const (
 	maxMessageContentLen = 10000
 )
 
+var (
+	errInvalidLimit       = errors.New("limit must be an integer between 1 and 100")
+	errInvalidBefore      = errors.New("before must be an RFC3339 timestamp")
+	errInvalidContent     = errors.New("content is required and must be 1-10000 characters")
+	errInvalidMessageType = errors.New(`message_type must be "text", "image", or "file"`)
+)
+
+// parseMessageLimit parses the ?limit= query param, defaulting to
+// defaultMessageLimit when raw is empty.
+func parseMessageLimit(raw string) (int, error) {
+	if raw == "" {
+		return defaultMessageLimit, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > maxMessageLimit {
+		return 0, errInvalidLimit
+	}
+	return n, nil
+}
+
+// parseMessageBefore parses the ?before= query param; a nil result with a
+// nil error means "not provided".
+func parseMessageBefore(raw string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil, errInvalidBefore
+	}
+	return &t, nil
+}
+
+// validateMessageContent assumes content has already been trimmed.
+func validateMessageContent(content string) error {
+	if content == "" || len(content) > maxMessageContentLen {
+		return errInvalidContent
+	}
+	return nil
+}
+
+// normalizeMessageType defaults raw to "text" when empty, and rejects
+// anything other than the three client-sendable types — "system" included,
+// since that's reserved for server-generated messages (see CLAUDE.md).
+func normalizeMessageType(raw string) (models.MessageType, error) {
+	messageType := models.MessageType(raw)
+	if messageType == "" {
+		messageType = models.MessageTypeText
+	}
+	switch messageType {
+	case models.MessageTypeText, models.MessageTypeImage, models.MessageTypeFile:
+		return messageType, nil
+	default:
+		return "", errInvalidMessageType
+	}
+}
+
 // ListMessages handles GET /api/v1/rooms/{room_id}/messages?limit=&before=.
 // before is an RFC3339 timestamp (the created_at of the oldest message from
 // a previous page); omitting it returns the newest messages.
@@ -35,24 +92,16 @@ func ListMessages(s *store.Store) http.HandlerFunc {
 			return
 		}
 
-		limit := defaultMessageLimit
-		if v := r.URL.Query().Get("limit"); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 1 || n > maxMessageLimit {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "limit must be an integer between 1 and 100")
-				return
-			}
-			limit = n
+		limit, err := parseMessageLimit(r.URL.Query().Get("limit"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
+			return
 		}
 
-		var before *time.Time
-		if v := r.URL.Query().Get("before"); v != "" {
-			t, err := time.Parse(time.RFC3339Nano, v)
-			if err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "before must be an RFC3339 timestamp")
-				return
-			}
-			before = &t
+		before, err := parseMessageBefore(r.URL.Query().Get("before"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
+			return
 		}
 
 		messages, err := s.ListRoomMessages(r.Context(), roomID, limit, before)
@@ -89,19 +138,14 @@ func SendMessage(s *store.Store) http.HandlerFunc {
 		}
 
 		content := strings.TrimSpace(req.Content)
-		if content == "" || len(content) > maxMessageContentLen {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "content is required and must be 1-10000 characters")
+		if err := validateMessageContent(content); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 			return
 		}
 
-		messageType := models.MessageType(req.MessageType)
-		if messageType == "" {
-			messageType = models.MessageTypeText
-		}
-		switch messageType {
-		case models.MessageTypeText, models.MessageTypeImage, models.MessageTypeFile:
-		default:
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", `message_type must be "text", "image", or "file"`)
+		messageType, err := normalizeMessageType(req.MessageType)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 			return
 		}
 

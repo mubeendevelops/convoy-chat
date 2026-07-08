@@ -2,44 +2,52 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/mubeendevelops/convoy-chat/internal/models"
 )
 
 // ToggleReaction adds userID's emoji reaction to messageID if they haven't
 // already reacted with it, or removes it if they have. added reports which
-// happened. The two branches run as one statement (a DELETE feeding a
-// conditional INSERT via a CTE) so a double-tap from the same user can't
-// race itself into an inconsistent state — no explicit transaction needed,
-// a single statement is already atomic.
+// happened.
+//
+// This is one statement (a DELETE feeding a conditional INSERT via a CTE),
+// but a single statement alone isn't enough to be race-free: if the reaction
+// doesn't exist yet, several concurrent toggles can all see "nothing to
+// delete" and all fall through to INSERT the same (message_id, user_id,
+// emoji) key — there's no existing row for them to serialize on the way
+// there is when a row already exists to DELETE. ON CONFLICT DO NOTHING
+// absorbs that race at the database level (exactly one insert wins, the
+// rest no-op instead of erroring); the two EXISTS checks then let Go tell
+// "I deleted it" apart from "someone else concurrently added it, so mine
+// was suppressed" without relying on ambiguous "zero rows returned"
+// semantics, which is exactly what the previous, simpler version got wrong
+// (caught by TestToggleReaction_ConcurrentSameUserSameEmoji).
 func (s *Store) ToggleReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) (added bool, err error) {
 	const q = `
 		WITH deleted AS (
 			DELETE FROM message_reactions
 			WHERE message_id = $1 AND user_id = $2 AND emoji = $3
 			RETURNING 1
+		),
+		inserted AS (
+			INSERT INTO message_reactions (id, message_id, user_id, emoji)
+			SELECT $4, $1, $2, $3
+			WHERE NOT EXISTS (SELECT 1 FROM deleted)
+			ON CONFLICT (message_id, user_id, emoji) DO NOTHING
+			RETURNING 1
 		)
-		INSERT INTO message_reactions (id, message_id, user_id, emoji)
-		SELECT $4, $1, $2, $3
-		WHERE NOT EXISTS (SELECT 1 FROM deleted)
-		RETURNING id`
+		SELECT EXISTS (SELECT 1 FROM deleted), EXISTS (SELECT 1 FROM inserted)`
 
-	var insertedID uuid.UUID
-	err = s.DB.QueryRow(ctx, q, messageID, userID, emoji, uuid.New()).Scan(&insertedID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The DELETE branch removed a row, so the INSERT's WHERE NOT
-			// EXISTS suppressed it — this was a removal, not an addition.
-			return false, nil
-		}
+	var didDelete, didInsert bool
+	if err := s.DB.QueryRow(ctx, q, messageID, userID, emoji, uuid.New()).Scan(&didDelete, &didInsert); err != nil {
 		return false, fmt.Errorf("toggling reaction: %w", err)
 	}
-	return true, nil
+	// !didDelete covers both "we inserted it" and "a concurrent toggle beat
+	// us to inserting the same key" — either way the end state is "present".
+	return !didDelete, nil
 }
 
 // ListReactionsForMessages batch-fetches reactions for messageIDs in one

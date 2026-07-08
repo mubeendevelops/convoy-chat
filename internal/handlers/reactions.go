@@ -17,6 +17,16 @@ import (
 
 const maxEmojiLen = 10
 
+var errInvalidEmoji = errors.New("emoji is required and must be at most 10 characters")
+
+// validateEmoji assumes emoji has already been trimmed.
+func validateEmoji(emoji string) error {
+	if emoji == "" || len(emoji) > maxEmojiLen {
+		return errInvalidEmoji
+	}
+	return nil
+}
+
 type reactionRequest struct {
 	Emoji string `json:"emoji"`
 }
@@ -56,8 +66,8 @@ func ToggleReaction(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		emoji := strings.TrimSpace(req.Emoji)
-		if emoji == "" || len(emoji) > maxEmojiLen {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "emoji is required and must be at most 10 characters")
+		if err := validateEmoji(emoji); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 			return
 		}
 

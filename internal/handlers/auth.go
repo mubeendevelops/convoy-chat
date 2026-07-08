@@ -19,6 +19,31 @@ var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,32}$`)
 
 const maxEmailLen = 255
 
+var (
+	errInvalidUsername = errors.New("username must be 3-32 characters and contain only letters, numbers, underscores, or hyphens")
+	errEmailTooLong    = errors.New("email is too long")
+	errEmailInvalid    = errors.New("email is not a valid address")
+)
+
+// validateUsername assumes username has already been trimmed.
+func validateUsername(username string) error {
+	if !usernamePattern.MatchString(username) {
+		return errInvalidUsername
+	}
+	return nil
+}
+
+// validateEmail assumes email has already been trimmed and lowercased.
+func validateEmail(email string) error {
+	if len(email) > maxEmailLen {
+		return errEmailTooLong
+	}
+	if _, err := mail.ParseAddress(email); err != nil {
+		return errEmailInvalid
+	}
+	return nil
+}
+
 type signupRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
@@ -47,17 +72,13 @@ func Signup(s *store.Store, jwtSecret string, jwtTTL time.Duration) http.Handler
 		req.Username = strings.TrimSpace(req.Username)
 		req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
-		if !usernamePattern.MatchString(req.Username) {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "username must be 3-32 characters and contain only letters, numbers, underscores, or hyphens")
+		if err := validateUsername(req.Username); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 			return
 		}
 
-		if len(req.Email) > maxEmailLen {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "email is too long")
-			return
-		}
-		if _, err := mail.ParseAddress(req.Email); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "email is not a valid address")
+		if err := validateEmail(req.Email); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 			return
 		}
 

@@ -34,6 +34,6 @@ func Health(s *store.Store) http.HandlerFunc {
 		if !healthy {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

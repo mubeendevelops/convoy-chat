@@ -1,0 +1,43 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    # Error-handling conventions this codebase already follows (CLAUDE.md:
+    # "wrap with context", "never discard errors silently") — catch drift.
+    - errorlint
+    - noctx
+    # pgx/database hygiene: this project touches raw rows.Query everywhere.
+    - sqlclosecheck
+    - rowserrcheck
+    # Security: relevant given JWT/bcrypt/auth code.
+    - gosec
+    - bodyclose
+    # Broad bug/perf/style diagnostics, general test hygiene.
+    - gocritic
+    - unconvert
+    - unparam
+    - misspell
+    - thelper
+    - whitespace
+  exclusions:
+    rules:
+      # Test fixtures legitimately use fixed passwords/secrets; that's not a
+      # hardcoded-credentials finding.
+      - path: _test\.go
+        linters:
+          - gosec
+      # unparam flags "ctx is always the same value" etc. in small,
+      # deliberately-context-first helper signatures (CLAUDE.md convention);
+      # not worth the churn of un-standardizing those signatures for a linter.
+      - path: _test\.go
+        linters:
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -17,6 +17,34 @@ import (
 
 const maxRoomNameLen = 255
 
+var (
+	errInvalidRoomName   = errors.New("name is required and must be 1-255 characters")
+	errInvalidPeerUserID = errors.New("peer_user_id must be a valid UUID")
+	errSelfDirect        = errors.New("cannot create a direct room with yourself")
+	errInvalidRoomType   = errors.New(`type must be "channel" or "direct"`)
+)
+
+// validateRoomName assumes name has already been trimmed.
+func validateRoomName(name string) error {
+	if name == "" || len(name) > maxRoomNameLen {
+		return errInvalidRoomName
+	}
+	return nil
+}
+
+// validatePeerUserID parses raw and rejects a self-DM, both checked before
+// any store call so a malformed or self-targeting request never reaches it.
+func validatePeerUserID(raw string, callerID uuid.UUID) (uuid.UUID, error) {
+	peerID, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, errInvalidPeerUserID
+	}
+	if peerID == callerID {
+		return uuid.Nil, errSelfDirect
+	}
+	return peerID, nil
+}
+
 type createRoomRequest struct {
 	Type        string  `json:"type"`
 	Name        string  `json:"name,omitempty"`
@@ -69,8 +97,8 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 		switch req.Type {
 		case "channel":
 			name := strings.TrimSpace(req.Name)
-			if name == "" || len(name) > maxRoomNameLen {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "name is required and must be 1-255 characters")
+			if err := validateRoomName(name); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 				return
 			}
 
@@ -83,13 +111,9 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 			httpx.WriteJSON(w, http.StatusCreated, room)
 
 		case "direct":
-			peerID, err := uuid.Parse(req.PeerUserID)
+			peerID, err := validatePeerUserID(req.PeerUserID, userID)
 			if err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "peer_user_id must be a valid UUID")
-				return
-			}
-			if peerID == userID {
-				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "cannot create a direct room with yourself")
+				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
 				return
 			}
 
@@ -115,7 +139,7 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 			httpx.WriteJSON(w, status, room)
 
 		default:
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", `type must be "channel" or "direct"`)
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", errInvalidRoomType.Error())
 		}
 	}
 }

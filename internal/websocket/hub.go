@@ -70,11 +70,13 @@ type Broadcast struct {
 	Payload []byte
 }
 
-// roomSubscriber is notified when this server gains its first local client in a
-// room or loses its last, so it can add/drop the matching Redis subscription.
+// roomSubscriber is notified when this server loses a room's last local
+// client, so it can drop the matching Redis subscription. Subscribing is
+// deliberately NOT symmetric — see Broker.EnsureSubscribed — a slightly-late
+// unsubscribe just means extra, harmless local delivery attempts to an
+// empty room, unlike a slightly-late subscribe, which loses events outright.
 // Implemented by *Broker; nil in tests or single-node setups without Redis.
 type roomSubscriber interface {
-	Subscribe(roomID uuid.UUID)
 	Unsubscribe(roomID uuid.UUID)
 }
 
@@ -203,10 +205,6 @@ func (h *Hub) addToRoom(c *Client, roomID uuid.UUID) {
 	}
 	members[c] = struct{}{}
 	c.rooms[roomID] = struct{}{}
-	if len(members) == 1 && h.subscriber != nil {
-		// First local client in this room → start receiving its Redis fan-out.
-		h.subscriber.Subscribe(roomID)
-	}
 	h.logger.Info("ws room join", "user_id", c.userID, "room_id", roomID, "room_size", len(members))
 }
 

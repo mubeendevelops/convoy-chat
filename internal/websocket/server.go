@@ -130,16 +130,23 @@ func (s *Server) Handler() http.HandlerFunc {
 		client := newClient(s, conn, userID, user.Username)
 		s.hub.Register(client)
 		go client.writePump()
-		go client.readPump()
 
-		// Presence bookkeeping takes a Redis/Postgres round trip; run it after
-		// the pumps start so it never delays the handshake or the client's
-		// first messages.
-		go func() {
-			pctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
-			defer cancel()
-			s.presenceOnline(pctx, userID)
-		}()
+		// Must complete before readPump starts accepting inbound frames:
+		// presenceOnline publishes this connection's "online" announcement,
+		// and readPump is what lets the client send its own next command
+		// (room.join, presence.update, ...). If readPump started first, a
+		// client that acts immediately after connecting could have that
+		// action's broadcast (e.g. presence.update's "away") win the race
+		// and arrive before their own connect-time "online" — an observer
+		// would then see away, followed by online arriving late and
+		// clobbering it. The Redis/Postgres round trip this adds to the
+		// handshake is small and bounded, the same tradeoff already made
+		// for room.join's EnsureSubscribed wait, for the same reason.
+		pctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+		s.presenceOnline(pctx, userID)
+		cancel()
+
+		go client.readPump()
 	}
 }
 

@@ -71,6 +71,15 @@ func (s *Server) handleRoomJoin(c *Client, env inboundEnvelope) {
 		return
 	}
 
+	// Must complete before hub.Join/publish below — see EnsureSubscribed's
+	// doc comment for why publishing before this is confirmed silently
+	// drops the event instead of delivering it late.
+	if err := s.broker.EnsureSubscribed(ctx, roomID); err != nil {
+		s.logger.Error("ws room.join subscribe failed", "user_id", c.userID, "room_id", roomID, "error", err)
+		c.sendError("internal_error", "failed to join room")
+		return
+	}
+
 	s.hub.Join(c, roomID)
 
 	s.publish(ctx, roomID, userJoinedEvent{
