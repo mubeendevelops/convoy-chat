@@ -21,6 +21,10 @@ const messageIdempotencyTTL = 5 * time.Minute
 // scanMessageWithAuthor scans a row produced by messageWithAuthorColumns.
 // Content is left nil when the message is soft-deleted, so callers never see
 // the original text through this shape even though it's retained in the row.
+// ReadBy/Reactions default to empty (never nil, so they serialize as [] not
+// null) — callers that have batch-fetched the real values overwrite them;
+// InsertMessage's fresh message correctly leaves them at this default, since
+// neither can exist yet for a message that was just created.
 func scanMessageWithAuthor(row pgx.Row) (*models.MessageWithAuthor, error) {
 	var m models.MessageWithAuthor
 	var content string
@@ -37,6 +41,8 @@ func scanMessageWithAuthor(row pgx.Row) (*models.MessageWithAuthor, error) {
 	if m.DeletedAt == nil {
 		m.Content = &content
 	}
+	m.ReadBy = []uuid.UUID{}
+	m.Reactions = []models.MessageReactionSummary{}
 	return &m, nil
 }
 
@@ -76,18 +82,39 @@ func (s *Store) ListRoomMessages(ctx context.Context, roomID uuid.UUID, limit in
 	if err != nil {
 		return nil, fmt.Errorf("querying room messages: %w", err)
 	}
-	defer rows.Close()
 
 	messages := make([]models.MessageWithAuthor, 0)
+	ids := make([]uuid.UUID, 0)
 	for rows.Next() {
 		message, err := scanMessageWithAuthor(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		messages = append(messages, *message)
+		ids = append(ids, message.ID)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterating room messages: %w", err)
+	}
+	rows.Close() // release the connection before issuing the follow-up queries below
+
+	readByMessage, err := s.ListReadByForMessages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	reactionsByMessage, err := s.ListReactionsForMessages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		if readBy, ok := readByMessage[messages[i].ID]; ok {
+			messages[i].ReadBy = readBy
+		}
+		if reactions, ok := reactionsByMessage[messages[i].ID]; ok {
+			messages[i].Reactions = reactions
+		}
 	}
 
 	return messages, nil

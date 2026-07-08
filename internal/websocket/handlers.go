@@ -39,6 +39,8 @@ func (s *Server) dispatch(c *Client, data []byte) {
 		s.handleTypingStop(c, env)
 	case eventPresenceUpdate:
 		s.handlePresenceUpdate(c, env)
+	case eventMessageRead:
+		s.handleMessageRead(c, env)
 	case "":
 		c.sendError("invalid_input", "missing event type")
 	default:
@@ -225,6 +227,64 @@ func (s *Server) handlePresenceUpdate(c *Client, env inboundEnvelope) {
 	ctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
 	defer cancel()
 	s.presenceUpdate(ctx, c.userID, status)
+}
+
+// handleMessageRead marks the message read for the caller and broadcasts
+// message.read_by, gated on membership in the message's room (looked up from
+// the message itself, since message.read carries no room_id — see CLAUDE.md).
+// A message that doesn't exist or is already soft-deleted 404s, matching
+// DeleteMessage's precedent. Re-marking an already-read message is a no-op
+// with no rebroadcast — nothing changed, so there's nothing to announce.
+func (s *Server) handleMessageRead(c *Client, env inboundEnvelope) {
+	messageID, err := uuid.Parse(env.MessageID)
+	if err != nil {
+		c.sendError("invalid_input", "message_id must be a valid UUID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(s.runCtx, dbTimeout)
+	defer cancel()
+
+	message, err := s.store.GetMessageByID(ctx, messageID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.sendError("not_found", "message not found")
+			return
+		}
+		s.logger.Error("ws message.read lookup failed", "user_id", c.userID, "message_id", messageID, "error", err)
+		c.sendError("internal_error", "failed to look up message")
+		return
+	}
+	if message.DeletedAt != nil {
+		c.sendError("not_found", "message not found")
+		return
+	}
+
+	if _, err := s.store.GetMembership(ctx, message.RoomID, c.userID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.sendError("forbidden", "not a member of this room")
+			return
+		}
+		s.logger.Error("ws message.read membership check failed", "user_id", c.userID, "room_id", message.RoomID, "error", err)
+		c.sendError("internal_error", "failed to verify membership")
+		return
+	}
+
+	alreadyRead, err := s.store.MarkMessageRead(ctx, messageID, c.userID)
+	if err != nil {
+		s.logger.Error("ws message.read persist failed", "user_id", c.userID, "message_id", messageID, "error", err)
+		c.sendError("internal_error", "failed to mark message read")
+		return
+	}
+	if alreadyRead {
+		return
+	}
+
+	s.publish(ctx, message.RoomID, messageReadByEvent{
+		Type:         eventMessageReadBy,
+		MessageID:    messageID,
+		ReadByUserID: c.userID,
+	})
 }
 
 // publish marshals event and publishes it to the room's Redis channel for

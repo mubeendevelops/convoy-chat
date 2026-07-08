@@ -94,6 +94,7 @@ func main() {
 			r.Get("/rooms/{room_id}/messages", handlers.ListMessages(st))
 			r.Post("/rooms/{room_id}/messages", handlers.SendMessage(st))
 			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st))
+			r.Post("/messages/{message_id}/reactions", handlers.ToggleReaction(st, logger))
 		})
 	})
 

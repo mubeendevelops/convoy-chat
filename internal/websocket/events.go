@@ -16,6 +16,7 @@ const (
 	eventTypingStart    = "typing.start"
 	eventTypingStop     = "typing.stop"
 	eventPresenceUpdate = "presence.update"
+	eventMessageRead    = "message.read"
 )
 
 // Server → client event type tags.
@@ -26,18 +27,20 @@ const (
 	eventUserLeft          = "user.left"
 	eventUserTyping        = "user.typing"
 	eventUserStatusChanged = "user.status_changed"
+	eventMessageReadBy     = "message.read_by"
 )
 
 // inboundEnvelope decodes a client frame. type + room_id route every event;
 // content + message_type are only read for message.send; status is only read
-// for presence.update. Read-receipt/reaction events add their own fields in
-// Phase 7.
+// for presence.update; message_id is only read for message.read. Reactions
+// are REST-only (internal/handlers/reactions.go), not WS inbound.
 type inboundEnvelope struct {
 	Type        string `json:"type"`
 	RoomID      string `json:"room_id"`
 	Content     string `json:"content"`
 	MessageType string `json:"message_type"`
 	Status      string `json:"status"`
+	MessageID   string `json:"message_id"`
 }
 
 // errorEvent is the server's {"type":"error","code","message"} envelope.
@@ -49,9 +52,11 @@ type errorEvent struct {
 
 // messageNewEvent and its payload match the message.new shape in
 // ConvoyChat_Complete_Context.md exactly: {id, room_id, user{id,username,
-// avatar_url}, content, created_at, read_by}. read_by is always [] until read
-// receipts land (Phase 7); message_type/updated_at are intentionally omitted
-// (available via the REST history shape if a client needs them).
+// avatar_url}, content, created_at, read_by}. read_by is always [] — a
+// message can't have been read by anyone at the instant it's broadcast, so
+// there's nothing to fetch here even now that read receipts exist (Phase 7);
+// message_type/updated_at are intentionally omitted (available via the REST
+// history shape if a client needs them).
 type messageNewEvent struct {
 	Type    string            `json:"type"`
 	Message messageNewPayload `json:"message"`
@@ -106,4 +111,14 @@ type userStatusChangedEvent struct {
 	UserID     uuid.UUID             `json:"user_id"`
 	Status     models.PresenceStatus `json:"status"`
 	LastSeenAt time.Time             `json:"last_seen_at"`
+}
+
+// messageReadByEvent matches
+// {"type":"message.read_by","message_id","read_by_user_id"}. No room_id in
+// this shape (matches CLAUDE.md as documented) — a client only ever marks
+// read a message it's already viewing, so it already knows the room.
+type messageReadByEvent struct {
+	Type         string    `json:"type"`
+	MessageID    uuid.UUID `json:"message_id"`
+	ReadByUserID uuid.UUID `json:"read_by_user_id"`
 }
