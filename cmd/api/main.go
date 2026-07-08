@@ -51,10 +51,11 @@ func main() {
 	st := store.New(db, rdb)
 	defer st.Close()
 
-	// The Hub owns all real-time connection state in a single goroutine; it
-	// stops when ctx is cancelled (graceful shutdown).
-	hub := websocket.NewHub(logger)
-	go hub.Run(ctx)
+	// The real-time layer: Hub (connection state, single goroutine) + Broker
+	// (Redis Pub/Sub fan-out). Both stop when ctx is cancelled (graceful
+	// shutdown).
+	wsServer := websocket.NewServer(st, cfg.JWTSecret, cfg.CORSAllowedOrigins, logger)
+	wsServer.Run(ctx)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -73,7 +74,7 @@ func main() {
 
 	// WebSocket connect authenticates via ?token= before the upgrade, so it
 	// sits outside the Bearer-header auth middleware group below.
-	r.Get("/ws", websocket.Handler(hub, cfg.JWTSecret, cfg.CORSAllowedOrigins, logger))
+	r.Get("/ws", wsServer.Handler())
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/signup", handlers.Signup(st, cfg.JWTSecret, cfg.JWTTTL))

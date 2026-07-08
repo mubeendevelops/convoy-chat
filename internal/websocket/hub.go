@@ -38,6 +38,11 @@ type Hub struct {
 	// command during shutdown unblock instead of leaking a goroutine.
 	done chan struct{}
 
+	// subscriber (optional) is told when a room gains its first / loses its last
+	// local client, so Redis subscriptions track local interest. Set once before
+	// Run via SetSubscriber; read only from the Run goroutine thereafter.
+	subscriber roomSubscriber
+
 	// clients and rooms are owned exclusively by the Run goroutine. Never read
 	// or write them from anywhere else.
 	clients map[*Client]struct{}
@@ -49,16 +54,26 @@ type roomSubscription struct {
 	roomID uuid.UUID
 }
 
-// Broadcast is an event destined for every client currently joined to RoomID,
-// optionally skipping Except (the originating client, so a sender isn't echoed
-// its own message). The delivery mechanism lives here so the Hub is complete;
-// producers (message.new, user.joined/left, Redis fan-in) arrive with the
-// message-routing step.
+// Broadcast is an event to deliver to every client currently joined to RoomID
+// on this server. It's fed by the Broker's Redis subscription (never directly
+// by a send handler), so delivery happens on exactly one path — the origin
+// server receives its own published events back and delivers them here once,
+// which is why there's no double-delivery and no per-client exclusion.
 type Broadcast struct {
 	RoomID  uuid.UUID
 	Payload []byte
-	Except  *Client
 }
+
+// roomSubscriber is notified when this server gains its first local client in a
+// room or loses its last, so it can add/drop the matching Redis subscription.
+// Implemented by *Broker; nil in tests or single-node setups without Redis.
+type roomSubscriber interface {
+	Subscribe(roomID uuid.UUID)
+	Unsubscribe(roomID uuid.UUID)
+}
+
+// SetSubscriber wires the Redis room subscriber. Call once, before Run.
+func (h *Hub) SetSubscriber(s roomSubscriber) { h.subscriber = s }
 
 // NewHub constructs a Hub. Call Run (once) to start its owning goroutine.
 func NewHub(logger *slog.Logger) *Hub {
@@ -111,6 +126,15 @@ func (h *Hub) Unregister(c *Client) { h.enqueueClient(h.unregister, c) }
 func (h *Hub) Join(c *Client, roomID uuid.UUID)  { h.enqueueSub(h.join, c, roomID) }
 func (h *Hub) Leave(c *Client, roomID uuid.UUID) { h.enqueueSub(h.leave, c, roomID) }
 
+// Broadcast enqueues an event for delivery to a room's local clients. Called by
+// the Broker's Redis subscription loop — the only producer of broadcasts.
+func (h *Hub) Broadcast(b Broadcast) {
+	select {
+	case h.broadcast <- b:
+	case <-h.done:
+	}
+}
+
 func (h *Hub) enqueueClient(ch chan *Client, c *Client) {
 	select {
 	case ch <- c:
@@ -157,6 +181,10 @@ func (h *Hub) addToRoom(c *Client, roomID uuid.UUID) {
 	}
 	members[c] = struct{}{}
 	c.rooms[roomID] = struct{}{}
+	if len(members) == 1 && h.subscriber != nil {
+		// First local client in this room → start receiving its Redis fan-out.
+		h.subscriber.Subscribe(roomID)
+	}
 	h.logger.Info("ws room join", "user_id", c.userID, "room_id", roomID, "room_size", len(members))
 }
 
@@ -179,6 +207,10 @@ func (h *Hub) detach(roomID uuid.UUID, c *Client) {
 	delete(members, c)
 	if len(members) == 0 {
 		delete(h.rooms, roomID)
+		if h.subscriber != nil {
+			// Last local client left → stop receiving this room's Redis fan-out.
+			h.subscriber.Unsubscribe(roomID)
+		}
 	}
 }
 
@@ -188,9 +220,6 @@ func (h *Hub) detach(roomID uuid.UUID, c *Client) {
 // entries mid-range — removeClient does, via detach — is safe in Go.
 func (h *Hub) deliver(b Broadcast) {
 	for c := range h.rooms[b.RoomID] {
-		if c == b.Except {
-			continue
-		}
 		select {
 		case c.send <- b.Payload:
 		default:

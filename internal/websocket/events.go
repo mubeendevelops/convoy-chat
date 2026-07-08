@@ -1,30 +1,80 @@
 package websocket
 
-// Client → server event type tags. Only the room-membership events are handled
-// in the connection-layer phase; message.send / typing / presence and their
-// tags arrive with the message-routing step, alongside their handlers.
+import (
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/mubeendevelops/convoy-chat/internal/models"
+)
+
+// Client → server event type tags.
 const (
-	eventRoomJoin  = "room.join"
-	eventRoomLeave = "room.leave"
+	eventRoomJoin    = "room.join"
+	eventRoomLeave   = "room.leave"
+	eventMessageSend = "message.send"
 )
 
 // Server → client event type tags.
 const (
-	eventError = "error"
+	eventError      = "error"
+	eventMessageNew = "message.new"
+	eventUserJoined = "user.joined"
+	eventUserLeft   = "user.left"
 )
 
-// inboundEnvelope is the minimal shape needed to route a client frame this
-// phase: the discriminating type plus the room it targets. Fields specific to
-// message.send / typing / etc. are decoded by their own handlers next phase.
+// inboundEnvelope decodes a client frame. type + room_id route every event;
+// content + message_type are only read for message.send. Typing/presence/read
+// events add their own fields with the message-routing follow-ons (Phase 6/7).
 type inboundEnvelope struct {
-	Type   string `json:"type"`
-	RoomID string `json:"room_id"`
+	Type        string `json:"type"`
+	RoomID      string `json:"room_id"`
+	Content     string `json:"content"`
+	MessageType string `json:"message_type"`
 }
 
-// errorEvent is the server's {"type":"error","code","message"} envelope, per
-// the WebSocket contract in CLAUDE.md.
+// errorEvent is the server's {"type":"error","code","message"} envelope.
 type errorEvent struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// messageNewEvent and its payload match the message.new shape in
+// ConvoyChat_Complete_Context.md exactly: {id, room_id, user{id,username,
+// avatar_url}, content, created_at, read_by}. read_by is always [] until read
+// receipts land (Phase 7); message_type/updated_at are intentionally omitted
+// (available via the REST history shape if a client needs them).
+type messageNewEvent struct {
+	Type    string            `json:"type"`
+	Message messageNewPayload `json:"message"`
+}
+
+type messageNewPayload struct {
+	ID        uuid.UUID          `json:"id"`
+	RoomID    uuid.UUID          `json:"room_id"`
+	User      models.UserSummary `json:"user"`
+	Content   *string            `json:"content"`
+	CreatedAt time.Time          `json:"created_at"`
+	ReadBy    []uuid.UUID        `json:"read_by"`
+}
+
+// userRef is the {id, username} pair embedded in user.joined.
+type userRef struct {
+	ID       uuid.UUID `json:"id"`
+	Username string    `json:"username"`
+}
+
+// userJoinedEvent matches {"type":"user.joined","user":{"id","username"},"room_id"}.
+type userJoinedEvent struct {
+	Type   string    `json:"type"`
+	User   userRef   `json:"user"`
+	RoomID uuid.UUID `json:"room_id"`
+}
+
+// userLeftEvent matches {"type":"user.left","user_id","room_id"}.
+type userLeftEvent struct {
+	Type   string    `json:"type"`
+	UserID uuid.UUID `json:"user_id"`
+	RoomID uuid.UUID `json:"room_id"`
 }
