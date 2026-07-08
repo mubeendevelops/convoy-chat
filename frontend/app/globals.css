@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+
+
+@layer base {
+  /*
+   * ConvoyChat palette (locked in Phase 9, see plan.md): cyan brand accent
+   * (--primary) reserved for buttons/links/mentions/active states/selected
+   * items/online indicators; everything else is neutral slate/gray. Values
+   * below are HSL conversions of the exact hex spec — see plan.md Phase 9
+   * for the source hex values and rationale.
+   */
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 192 91% 36%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 192 91% 36%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+
+    /* App-specific tokens beyond the shadcn defaults. */
+    --sidebar: 210 40% 96%;
+    --sidebar-foreground: 222 47% 11%;
+    --bubble-outgoing: 192 91% 36%;
+    --bubble-outgoing-foreground: 0 0% 100%;
+    --bubble-incoming: 214 32% 91%;
+    --bubble-incoming-foreground: 222 47% 11%;
+  }
+  .dark {
+    --background: 224 71% 4%;
+    --foreground: 210 20% 98%;
+    --card: 221 39% 11%;
+    --card-foreground: 210 20% 98%;
+    --popover: 221 39% 11%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 188 86% 53%;
+    --primary-foreground: 224 71% 4%;
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 215 28% 17%;
+    --muted-foreground: 218 11% 65%;
+    --accent: 215 28% 17%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 188 86% 53%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+
+    /* App-specific tokens beyond the shadcn defaults. */
+    --sidebar: 223 39% 7%;
+    --sidebar-foreground: 210 20% 98%;
+    --bubble-outgoing: 189 94% 43%;
+    --bubble-outgoing-foreground: 224 71% 4%;
+    --bubble-incoming: 215 28% 17%;
+    --bubble-incoming-foreground: 210 20% 98%;
+  }
+}
