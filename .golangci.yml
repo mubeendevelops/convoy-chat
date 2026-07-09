@@ -24,6 +24,12 @@ linters:
     - thelper
     - whitespace
   exclusions:
+    paths:
+      # The frontend's node_modules vendors a stray .go file (the `flatted`
+      # npm package), which unscoped `golangci-lint run` (./... from the module
+      # root, as `make lint` invokes it) would otherwise descend into and flag.
+      # Not our code — exclude the whole frontend tree from Go linting.
+      - frontend/
     rules:
       # Test fixtures legitimately use fixed passwords/secrets; that's not a
       # hardcoded-credentials finding.

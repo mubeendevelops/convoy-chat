@@ -1,35 +1,36 @@
 "use client";
 
-import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useWebSocket } from "@/hooks/useWebSocket";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import {
+  flattenSortedDedup,
+  markFailed,
+  messagesQueryKey,
+  nextCursor,
+  PAGE_SIZE,
+  upsertMessages,
+  type ChatMessage,
+  type MessagesData,
+  type MessagesPage,
+} from "@/lib/messagesCache";
 import type { MessageWithAuthor } from "@/lib/types";
 
-const PAGE_SIZE = 50;
+// ChatMessage moved to lib/messagesCache (shared with the WS provider); re-
+// exported here so existing `@/hooks/useMessages` imports keep working.
+export type { ChatMessage } from "@/lib/messagesCache";
 
-// A message still in flight or that failed to send carries a client-only
-// `status`; a confirmed server message never has one (the field is optional,
-// so real API responses satisfy this type as-is). Kept here rather than in
-// lib/types.ts, since that file mirrors the backend 1:1 and this is UI-only
-// state layered on top.
-export type ChatMessage = MessageWithAuthor & { status?: "sending" | "failed" };
+// A WS send that never echoes back a message.new within this window is treated
+// as failed (socket dropped between our write and the server persisting it).
+const WS_ACK_TIMEOUT_MS = 10000;
 
-type MessagesPage = ChatMessage[];
-
-function messagesQueryKey(roomId: string | undefined) {
-  return ["messages", roomId] as const;
-}
-
-// Pages arrive newest-first (see CLAUDE.md keyset pagination). The cursor
-// for the next (older) page is the created_at of the last element of the
-// last page fetched — a short page means there's nothing older left.
-function nextCursor(page: MessagesPage): string | undefined {
-  return page.length < PAGE_SIZE ? undefined : page[page.length - 1]?.created_at;
-}
-
-// Paginated room history, newest at the bottom. Call fetchNextPage() when
-// the user scrolls to the top of the list to load the next-older page.
+// Paginated room history, newest at the bottom. Call fetchNextPage() when the
+// user scrolls to the top to load the next-older page. Live messages, optimistic
+// sends, and reconnect resync all merge into the same cache; flattenSortedDedup
+// gives a stable ascending render order regardless of how rows got there.
 export function useMessages(roomId: string | undefined) {
   const query = useInfiniteQuery({
     queryKey: messagesQueryKey(roomId),
@@ -43,46 +44,31 @@ export function useMessages(roomId: string | undefined) {
     enabled: !!roomId,
   });
 
-  // Each page is newest-first and pages are fetched newest-page-first, so
-  // flattening alone would already be newest-to-oldest — but re-sorting
-  // explicitly (ascending by created_at, id as a tiebreak) keeps ordering
-  // correct and stable once optimistic sends merge in below, rather than
-  // relying on fetch order.
-  const messages: ChatMessage[] = (query.data?.pages.flat() ?? [])
-    .slice()
-    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-
+  const messages = flattenSortedDedup(query.data);
   return { ...query, messages };
 }
 
-interface SendMessageVars {
-  content: string;
-  clientId: string;
-}
-
-// REST fallback send (Phase 12 is REST-only; WebSocket send arrives in
-// Phase 13). onMutate appends an optimistic message immediately; onSuccess
-// swaps it for the server's version; onError marks it "failed" in place
-// instead of silently dropping it, so the user's text and the failure both
-// stay visible. clientId doubles as the Idempotency-Key header, so a
-// double-invoke (double-click, retry) can't insert the message twice.
+// Sends a message, preferring the live WebSocket and falling back to REST when
+// the socket is down. Either way an optimistic bubble appears immediately:
+//   - WS path: message.send goes out with a client_id nonce; the server echoes
+//     it in message.new, and the WS provider reconciles the bubble centrally.
+//     An ack timeout flips a never-echoed bubble to "failed".
+//   - REST path (socket down): POST with Idempotency-Key, reconciled on success
+//     and marked "failed" on error — the unchanged Phase 12 behavior.
+// Returns a plain send(content) — no pending state, so sends are rapid-fire.
 export function useSendMessage(roomId: string) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
-  const queryKey = messagesQueryKey(roomId);
+  const { send } = useWebSocket();
 
-  return useMutation<MessageWithAuthor, unknown, SendMessageVars, { clientId: string }>({
-    mutationFn: ({ content, clientId }) =>
-      api.post<MessageWithAuthor>(
-        `/api/v1/rooms/${roomId}/messages`,
-        { content },
-        { headers: { "Idempotency-Key": clientId } },
-      ),
+  return useCallback(
+    (content: string) => {
+      const clientId = crypto.randomUUID();
+      const currentUserId = currentUser?.id ?? clientId;
+      const queryKey = messagesQueryKey(roomId);
+      const now = new Date().toISOString();
 
-    onMutate: async ({ content, clientId }) => {
-      await queryClient.cancelQueries({ queryKey });
-
-      const optimisticMessage: ChatMessage = {
+      const optimistic: ChatMessage = {
         id: clientId,
         room_id: roomId,
         user: currentUser
@@ -90,45 +76,44 @@ export function useSendMessage(roomId: string) {
           : { id: clientId, username: "you" },
         content,
         message_type: "text",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        created_at: now,
+        updated_at: now,
         read_by: [],
         reactions: [],
         status: "sending",
       };
 
-      queryClient.setQueryData<InfiniteData<MessagesPage, string | undefined>>(queryKey, (old) =>
-        old
-          ? { ...old, pages: [[optimisticMessage, ...(old.pages[0] ?? [])], ...old.pages.slice(1)] }
-          : { pages: [[optimisticMessage]], pageParams: [undefined] },
+      queryClient.setQueryData<MessagesData>(queryKey, (old) =>
+        upsertMessages(old, [{ message: optimistic }], currentUserId),
       );
 
-      return { clientId };
-    },
+      const sentOverWs = send({ type: "message.send", room_id: roomId, content, client_id: clientId });
 
-    onSuccess: (serverMessage, _vars, context) => {
-      queryClient.setQueryData<InfiniteData<MessagesPage, string | undefined>>(queryKey, (old) =>
-        old
-          ? {
-              ...old,
-              pages: old.pages.map((page) => page.map((m) => (m.id === context.clientId ? serverMessage : m))),
-            }
-          : old,
-      );
-    },
+      if (sentOverWs) {
+        // Success is reconciled centrally when message.new echoes this client_id
+        // back. This timer only bites if that echo never arrives (send lost mid-
+        // drop); it self-checks, so it's a no-op once the bubble is replaced.
+        setTimeout(() => {
+          queryClient.setQueryData<MessagesData>(queryKey, (old) => markFailed(old, clientId));
+        }, WS_ACK_TIMEOUT_MS);
+        return;
+      }
 
-    onError: (_err, _vars, context) => {
-      if (!context) return;
-      queryClient.setQueryData<InfiniteData<MessagesPage, string | undefined>>(queryKey, (old) =>
-        old
-          ? {
-              ...old,
-              pages: old.pages.map((page) =>
-                page.map((m) => (m.id === context.clientId ? { ...m, status: "failed" as const } : m)),
-              ),
-            }
-          : old,
-      );
+      api
+        .post<MessageWithAuthor>(
+          `/api/v1/rooms/${roomId}/messages`,
+          { content },
+          { headers: { "Idempotency-Key": clientId } },
+        )
+        .then((serverMessage) => {
+          queryClient.setQueryData<MessagesData>(queryKey, (old) =>
+            upsertMessages(old, [{ message: serverMessage, clientId }], currentUserId),
+          );
+        })
+        .catch(() => {
+          queryClient.setQueryData<MessagesData>(queryKey, (old) => markFailed(old, clientId));
+        });
     },
-  });
+    [queryClient, currentUser, send, roomId],
+  );
 }

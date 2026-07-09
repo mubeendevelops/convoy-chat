@@ -32,7 +32,10 @@ const (
 
 // inboundEnvelope decodes a client frame. type + room_id route every event;
 // content + message_type are only read for message.send; status is only read
-// for presence.update; message_id is only read for message.read. Reactions
+// for presence.update; message_id is only read for message.read; client_id is
+// only read for message.send (an optional client-generated nonce echoed back
+// in message.new so the sender can match its own optimistic message to the
+// broadcast — the broadcast carries the real DB id, not the nonce). Reactions
 // are REST-only (internal/handlers/reactions.go), not WS inbound.
 type inboundEnvelope struct {
 	Type        string `json:"type"`
@@ -41,6 +44,7 @@ type inboundEnvelope struct {
 	MessageType string `json:"message_type"`
 	Status      string `json:"status"`
 	MessageID   string `json:"message_id"`
+	ClientID    string `json:"client_id"`
 }
 
 // errorEvent is the server's {"type":"error","code","message"} envelope.
@@ -56,7 +60,10 @@ type errorEvent struct {
 // message can't have been read by anyone at the instant it's broadcast, so
 // there's nothing to fetch here even now that read receipts exist (Phase 7);
 // message_type/updated_at are intentionally omitted (available via the REST
-// history shape if a client needs them).
+// history shape if a client needs them). client_id is the sender's optional
+// nonce echoed straight back (omitempty ⇒ absent unless the sender supplied
+// one), letting that sender reconcile its optimistic message against this
+// broadcast; other clients simply ignore an id they don't recognize.
 type messageNewEvent struct {
 	Type    string            `json:"type"`
 	Message messageNewPayload `json:"message"`
@@ -69,6 +76,7 @@ type messageNewPayload struct {
 	Content   *string            `json:"content"`
 	CreatedAt time.Time          `json:"created_at"`
 	ReadBy    []uuid.UUID        `json:"read_by"`
+	ClientID  string             `json:"client_id,omitempty"`
 }
 
 // userRef is the {id, username} pair embedded in user.joined.

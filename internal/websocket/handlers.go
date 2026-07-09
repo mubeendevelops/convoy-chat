@@ -165,6 +165,7 @@ func (s *Server) handleMessageSend(c *Client, env inboundEnvelope) {
 			Content:   message.Content,
 			CreatedAt: message.CreatedAt,
 			ReadBy:    []uuid.UUID{},
+			ClientID:  env.ClientID,
 		},
 	})
 }

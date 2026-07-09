@@ -179,6 +179,11 @@ export type ClientEvent =
       room_id: string;
       content: string;
       message_type?: MessageType;
+      // Optional client-generated nonce (a deviation beyond the context file,
+      // like room.leave/is_typing) echoed back in message.new so the sender
+      // can match its optimistic bubble to the broadcast, which carries the
+      // real DB id, not this nonce.
+      client_id?: string;
     }
   | { type: "typing.start"; room_id: string }
   | { type: "typing.stop"; room_id: string }
@@ -188,6 +193,8 @@ export type ClientEvent =
 // message.new's payload is deliberately not MessageWithAuthor: it omits
 // message_type/updated_at and read_by is always [] (a message can't have
 // been read by anyone at the instant it's broadcast) — see CLAUDE.md.
+// client_id is present only on the echo of a message.send that carried a
+// nonce (absent otherwise, via the backend's omitempty).
 export interface WsMessage {
   id: string;
   room_id: string;
@@ -195,6 +202,7 @@ export interface WsMessage {
   content: string | null;
   created_at: string;
   read_by: string[];
+  client_id?: string;
 }
 
 // Inbound-dispatch error codes (internal/websocket/handlers.go +

@@ -5,12 +5,11 @@ import { Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { useSendMessage } from "@/hooks/useMessages";
 import { validateMessageContent } from "@/lib/validation";
 
 const MAX_TEXTAREA_HEIGHT_PX = 160;
 
-export function MessageInput({ sendMessage }: { sendMessage: ReturnType<typeof useSendMessage> }) {
+export function MessageInput({ onSend }: { onSend: (content: string) => void }) {
   const [content, setContent] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -24,25 +23,21 @@ export function MessageInput({ sendMessage }: { sendMessage: ReturnType<typeof u
   }, [content]);
 
   const trimmed = content.trim();
-  const canSend = !validateMessageContent(trimmed) && !sendMessage.isPending;
+  const canSend = !validateMessageContent(trimmed);
 
-  async function handleSend() {
+  function handleSend() {
     if (!canSend) return;
-
+    // Sending is optimistic and instant (WS, or REST fallback) — clear the box
+    // right away and fire. Success/failure surfaces inline on the bubble
+    // itself, so there's no pending state to block on here.
     setContent("");
-    try {
-      await sendMessage.mutateAsync({ content: trimmed, clientId: crypto.randomUUID() });
-    } catch {
-      // Surfaced inline on the message itself — the mutation's onError
-      // marks that optimistic bubble "failed" (see MessageBubble), so
-      // there's nothing further to show here.
-    }
+    onSend(trimmed);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void handleSend();
+      handleSend();
     }
   }
 
@@ -55,11 +50,10 @@ export function MessageInput({ sendMessage }: { sendMessage: ReturnType<typeof u
           onChange={(e) => setContent(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Message..."
-          disabled={sendMessage.isPending}
           rows={1}
           className="min-h-[44px] resize-none overflow-y-auto"
         />
-        <Button size="icon" onClick={() => void handleSend()} disabled={!canSend} aria-label="Send message">
+        <Button size="icon" onClick={handleSend} disabled={!canSend} aria-label="Send message">
           <Send className="h-4 w-4" />
         </Button>
       </div>
