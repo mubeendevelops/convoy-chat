@@ -1,0 +1,351 @@
+# ConvoyChat
+
+A production-grade, Slack-like real-time chat application: a Go API serving
+REST + WebSocket, a Next.js 14 frontend, PostgreSQL for persistence, and
+Redis for presence state and cross-server Pub/Sub broadcast.
+
+**Features:** JWT auth · channels + direct messages · room/member management
+· real-time messaging with persistence and history · presence
+(online/away/offline) · typing indicators · read receipts · emoji reactions
+· multi-server broadcast via Redis Pub/Sub.
+
+**Deferred to v2:** file uploads, admin dashboard, refresh tokens. See
+[Known limitations](#known-limitations--v2) below.
+
+## Architecture
+
+```
+Browser — Next.js 14 (Vercel)
+REST (lib/api.ts)  +  1 WebSocket per session (hooks/useWebSocket.tsx)
+  │
+  ▼
+Go API — cmd/api, chi router (Render)
+  │
+  ├── REST handlers (internal/handlers)
+  │     auth · users · rooms · messages · reactions
+  │
+  └── WebSocket layer (internal/websocket)
+        ├── Hub    — single goroutine; owns the client set + room→clients
+        │            index; fans events out to every locally-connected
+        │            client in that room
+        └── Broker — bridges the Hub to Redis Pub/Sub so an event reaches
+                      clients connected to *other* server instances too
+                      (see "Multi-server broadcast" below)
+  │
+  ▼
+internal/store — the only package that touches pgx / go-redis directly
+  │
+  ├── PostgreSQL — durable source of truth
+  │     users · rooms · room_members · messages
+  │     message_reactions · message_read_receipts
+  │
+  └── Redis — ephemeral only; nothing here is load-bearing
+        presence:conns:{user_id} / presence:status:{user_id}   (TTL'd)
+        idempotency:message:{room_id}:{user_id}:{key}          (TTL'd)
+        PUBLISH/SUBSCRIBE on room:{room_id}
+```
+
+A message send is persisted to Postgres *before* it's broadcast, so history
+is never missing something a connected client already saw. Redis holds
+nothing that can't be lost safely: presence keys expire and self-heal within
+one 15s heartbeat, and idempotency keys just guard a 5-minute retry window —
+a Redis restart never loses a message, room, or user.
+
+### Multi-server broadcast
+
+Each server instance dynamically `SUBSCRIBE`s a Redis channel
+(`room:{room_id}`) only while it has at least one local client in that room,
+and delivers an event to local clients only when it arrives back through
+that subscription — including on the server that originated it. One
+delivery path means no double-delivery and no per-instance dedup logic.
+
+```
+Instance 1 (2 local clients in #general)  ──┐
+                                              │  each SUBSCRIBEs room:<id> while it
+Instance 2 (1 local client in #general)   ──┤  has ≥1 local client in that room
+                                              │
+                                              ▼
+                                    Redis PUBLISH room:<id>
+                                              │
+                                              ▼
+                     fanned out to both subscribed instances, which each
+                     deliver to their own local clients — never each other's
+```
+
+Subscribing is synchronous and confirmed *before* a joining client's
+`user.joined` is published (Redis `PUBLISH` silently drops to a channel with
+no live subscriber, so publishing first would lose the joiner's own event).
+Unsubscribing on a room's last local leave is fire-and-forget — a late
+unsubscribe only wastes a little effort delivering to an empty room, it
+never loses anything.
+
+## Tech stack
+
+**Backend** — Go 1.25, module `github.com/mubeendevelops/convoy-chat`:
+
+| Library | Version |
+|---|---|
+| github.com/go-chi/chi/v5 | v5.3.0 |
+| github.com/gorilla/websocket | v1.5.3 |
+| github.com/redis/go-redis/v9 | v9.21.0 |
+| github.com/jackc/pgx/v5 | v5.10.0 |
+| github.com/google/uuid | v1.6.0 |
+| github.com/golang-jwt/jwt/v5 | v5.3.1 |
+| golang.org/x/crypto (bcrypt) | v0.53.0 |
+| github.com/golang-migrate/migrate/v4 | v4.19.1 |
+| github.com/go-chi/cors | v1.2.2 |
+
+**Frontend** — Next.js 14.2.35 (App Router), React 18.3.x, TypeScript ~5.9,
+Tailwind CSS 3.4.19, shadcn/ui, @tanstack/react-query 5.101.2,
+@tanstack/react-virtual 3.14.5, zustand 5.0.14, next-themes 0.4.6. A raw
+`WebSocket` client — not Socket.IO, since the backend speaks plain WS via
+gorilla.
+
+**Infra** — PostgreSQL (`postgres:17-alpine` in dev), Redis
+(`redis:7-alpine`), Docker + docker-compose. Deploy targets: Render
+(backend), Vercel (frontend) — see [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Repo layout
+
+```
+cmd/api/            main.go, router.go, logging.go, migrate.go (-migrate mode)
+internal/
+  auth/              JWT generate/validate, bcrypt password hashing, auth middleware
+  websocket/         Hub, Broker (Redis Pub/Sub bridge), Client (read/write pumps),
+                      inbound event dispatch, presence + typing state
+  handlers/          REST handlers: health, auth, users, rooms, messages, reactions
+  models/            User, Room, Message, Presence types
+  store/             ALL Postgres/Redis access lives here — handlers and the
+                      websocket package never touch pgx/go-redis directly
+  config/            env loading + validation
+  httpx/             shared JSON response/error helpers
+  testutil/          spins up real Postgres+Redis testcontainers for integration tests
+migrations/          golang-migrate up/down .sql pairs
+frontend/            Next.js 14 app (App Router) — see frontend/README.md for the
+                      create-next-app defaults; app/, components/, hooks/, lib/
+docker-compose.yml         local dev: Postgres (host port 5433) + Redis
+docker-compose.prod.yml    production-oriented full stack (own Compose project)
+Dockerfile                 multi-stage Go build → alpine, non-root, ~22MB,
+                            doubles as the migration-init image via `-migrate`
+Makefile                   build/run/test/lint/migrate-up/migrate-down
+```
+
+## Getting started (local development)
+
+**Prerequisites:** Go 1.25+, Node 20+ (LTS), Docker + Docker Compose, git.
+
+```bash
+# 1. Clone and enter the repo
+git clone <this-repo-url> convoy-chat
+cd convoy-chat
+
+# 2. Backend env — the checked-in placeholder JWT_SECRET is already 32+
+#    chars, so this works out of the box for local dev. Never reuse it
+#    anywhere real.
+cp .env.example .env
+
+# 3. Start Postgres + Redis
+docker compose up -d
+
+# 4. Load env vars into this shell, then apply migrations
+set -a && source .env && set +a
+go run ./cmd/api -migrate
+
+# 5. Run the backend (same shell, so the env vars are still loaded)
+go run ./cmd/api
+# → starting server addr=:8080 env=development
+```
+
+In a second terminal, verify it's healthy:
+
+```bash
+curl http://localhost:8080/health
+# {"postgres":"ok","redis":"ok"}
+```
+
+Then bring up the frontend in a third terminal:
+
+```bash
+cd frontend
+cp .env.example .env.local   # defaults already point at localhost:8080
+npm install
+npm run dev
+# → open http://localhost:3000
+```
+
+Sign up two different users (e.g. in a second browser or an incognito
+window), create a channel or start a DM, and send messages between them to
+see real-time delivery, presence, typing, and read receipts.
+
+> **Don't run `npm run build` while `npm run dev` is live against the same
+> `.next/` directory** — it corrupts the webpack module cache. Stop the dev
+> server first, or use a separate checkout.
+
+### Useful commands
+
+```bash
+make build / run / test / lint / migrate-up / migrate-down   # backend, from repo root
+go test ./... -race                                          # full backend suite;
+                                                               # integration tests need
+                                                               # Docker and skip gracefully
+                                                               # without it
+npm run build / npm run lint                                  # frontend, from frontend/
+```
+
+`make migrate-down` (and any migration command besides plain "up") needs the
+separate `golang-migrate` CLI:
+
+```bash
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+```
+
+Local dev Postgres binds host port **5433**, not 5432 (avoids clashing with
+a native Postgres install some machines already run on 5432 — the
+container's internal port is still 5432). Remap freely in
+`docker-compose.yml` + `.env` if that's not a concern on your machine.
+
+## Environment variables
+
+**Backend** (`.env` — see `.env.example`):
+
+| Var | Default (dev) | Purpose |
+|---|---|---|
+| `PORT` | `8080` | HTTP listen port |
+| `APP_ENV` | `development` | `development` \| `production` (switches structured logging to JSON) |
+| `DATABASE_URL` | — (required) | pgx pool DSN, e.g. `postgres://convoy:convoy@localhost:5433/convoychat?sslmode=disable` |
+| `REDIS_URL` | — (required) | e.g. `redis://localhost:6379/0` |
+| `JWT_SECRET` | — (required) | HS256 signing secret, 32+ chars; server refuses to boot without it |
+| `JWT_TTL` | `24h` | Access-token lifetime (no refresh tokens in v1) |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated; also gates the WebSocket `Origin` check |
+| `MIGRATIONS_PATH` | `migrations` | Only read by `-migrate` mode; relative to the working directory |
+
+**Frontend** (`frontend/.env.local` — see `frontend/.env.example`):
+
+| Var | Default (dev) | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | REST base URL |
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:8080/ws` | WebSocket URL (`wss://` in production — a browser on an `https://` page blocks a plain `ws://` connection as mixed content) |
+
+Production values for both, plus the managed Postgres/Redis and Vercel
+setup, are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## REST API
+
+Base path `/api/v1` unless noted. Every error response uses one JSON shape:
+`{"error": {"code": "...", "message": "..."}}` with codes `invalid_input`
+(400), `unauthorized` (401), `forbidden` (403), `not_found` (404),
+`conflict` (409), `internal_error` (500).
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/auth/signup` | none | 201 `{token, user}`; 400 `invalid_input`, 409 `conflict` (username/email taken) |
+| POST | `/auth/login` | none | 200 `{token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration) |
+| GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
+| POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair) |
+| GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
+| GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member (also covers a nonexistent room, so room IDs can't be enumerated) |
+| GET | `/rooms/{room_id}/members` | Bearer JWT | same 403 rule as above |
+| POST | `/rooms/{room_id}/invite` | Bearer JWT, admin only | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member |
+| POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member |
+| GET | `/rooms/{room_id}/messages` | Bearer JWT | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member |
+| POST | `/rooms/{room_id}/messages` | Bearer JWT | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes |
+| DELETE | `/messages/{message_id}` | Bearer JWT | 200 `{"status":"deleted"}`; author or room admin only; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted |
+| POST | `/messages/{message_id}/reactions` | Bearer JWT | `{"emoji"}` toggles: 201 `added` / 200 `removed`; publishes `message.reaction` live over WebSocket; 404 if the message is nonexistent or deleted |
+| GET | `/health` | none | `{"postgres":"ok","redis":"ok"}`, 503 if either dependency is down |
+
+## WebSocket API
+
+Connect: `GET /ws?token=<JWT>` — the token is validated **before** the
+upgrade (invalid/missing → HTTP 401, standard error envelope). `Origin` is
+checked against `CORS_ALLOWED_ORIGINS`; clients that send no `Origin` header
+(native apps, `websocat`, curl) are allowed.
+
+### Client → server
+
+```jsonc
+{ "type": "room.join",       "room_id": "<uuid>" }
+{ "type": "room.leave",      "room_id": "<uuid>" }
+{ "type": "message.send",    "room_id": "<uuid>", "content": "Hello!", "message_type": "text", "client_id": "<uuid>" }
+{ "type": "typing.start",    "room_id": "<uuid>" }
+{ "type": "typing.stop",     "room_id": "<uuid>" }
+{ "type": "message.read",    "message_id": "<uuid>" }
+{ "type": "presence.update", "status": "online" | "away" | "offline" }
+```
+
+### Server → client
+
+```jsonc
+{ "type": "message.new", "message": {
+    "id": "<uuid>", "room_id": "<uuid>",
+    "user": { "id": "<uuid>", "username": "john_doe", "avatar_url": "..." },
+    "content": "Hello!", "created_at": "2026-07-05T15:30:00Z", "read_by": [],
+    "client_id": "<uuid, echoed only when message.send carried one>" } }
+
+{ "type": "user.joined",         "user": { "id": "<uuid>", "username": "john_doe" }, "room_id": "<uuid>" }
+{ "type": "user.left",           "user_id": "<uuid>", "room_id": "<uuid>" }
+{ "type": "user.typing",         "user_id": "<uuid>", "room_id": "<uuid>", "is_typing": true }
+{ "type": "user.status_changed", "user_id": "<uuid>", "status": "online", "last_seen_at": "2026-07-05T15:35:00Z" }
+{ "type": "message.read_by",     "message_id": "<uuid>", "read_by_user_id": "<uuid>" }
+{ "type": "message.reaction",    "message_id": "<uuid>", "user_id": "<uuid>", "emoji": "👍", "action": "added" | "removed" }
+{ "type": "error",               "code": "...", "message": "..." }
+```
+
+**Notes for client authors:**
+
+- `client_id` on `message.send` is an opaque, client-generated nonce the
+  server never interprets — it's echoed back verbatim on the resulting
+  `message.new` (omitted if unsent) so the sender can reconcile its own
+  optimistic UI against the broadcast, which carries the real database ID.
+  Other clients ignore an id they don't recognize.
+- A dropped connection (crash, network loss, tab closed uncleanly)
+  synthesizes `user.left` for every room it had joined, same as an explicit
+  `room.leave` — detected via a 60s read-deadline if the close was never
+  seen.
+- `message.read`/reactions carry no `room_id`; resolve the room from the
+  message itself if you need it (see `message.read_by`/`message.reaction`).
+- Reactions are REST-only to send (`POST .../reactions`), but broadcast live
+  over the socket on success — there's no `message.*reaction*` client→server
+  event.
+- `room.join`, `message.send`, and `typing.start` gate on active room
+  membership (`error{code:"forbidden"}` otherwise); `room.leave` and
+  `typing.stop` are always allowed.
+
+## Testing
+
+```bash
+go test ./...          # unit tests, colocated *_test.go
+go test ./... -race    # how the suite is verified; integration tests spin up
+                        # real Postgres+Redis testcontainers and skip
+                        # gracefully if Docker isn't available
+golangci-lint run       # internal/testutil.NewStore(t) gives each integration
+                        # test a fresh, isolated Postgres+Redis pair
+```
+
+`cmd/api` integration tests build the real router (`newRouter`, the same
+function `main` uses) and drive real WebSocket clients over `httptest`, so
+the hub/broker/auth stack is exercised end-to-end, not mocked.
+
+## Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Render (backend) + Vercel
+(frontend) deploy walkthrough, local prod-compose rehearsal, and the
+production-readiness checklist (secrets, HTTPS/WSS, connection limits,
+backups, rate limiting, graceful shutdown).
+
+## Known limitations / v2
+
+- No file uploads, admin dashboard, or refresh-token rotation (schema and
+  auth are ready for the latter two; not built in v1).
+- No promote/demote/kick, and no admin-succession if the last admin leaves a
+  channel — a room can end up with no admin. A DM has no admin by design (a
+  1:1 conversation has no owner).
+- JWT lives in `localStorage`, not an httpOnly cookie, so the WebSocket
+  handshake can authenticate via `?token=`. This is an accepted, documented
+  v1 tradeoff (XSS-readable token) rather than an oversight.
+- No endpoint to search or list users — starting a DM means pasting the
+  peer's exact user ID. There's also no way to fetch a user's *current*
+  presence on demand; presence is learned only from live events received
+  after your socket connects (a teammate nobody's "heard from" this session
+  shows as offline until they do something).
+- `group` rooms are schema-supported but not exposed by any v1 endpoint;
+  only `channel` and `direct` are creatable today.
