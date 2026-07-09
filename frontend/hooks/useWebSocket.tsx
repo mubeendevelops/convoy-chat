@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   addReadReceipt,
+  applyReaction,
   messagesQueryKey,
   newestConfirmedCreatedAt,
   PAGE_SIZE,
@@ -159,6 +160,20 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // A join implies the user is online; the authoritative signal is
           // user.status_changed, which the backend also fans out.
           usePresenceStore.getState().setStatus(event.user.id, "online");
+          // Inviting has no live broadcast of its own (REST-only, see
+          // CLAUDE.md) — this is the first signal an already-open room gets
+          // that its member list might be stale, since it fires whenever
+          // *anyone* WS room.joins it, new member or not (an existing
+          // member just reopening the room fires it too — invalidating then
+          // is a harmless extra refetch, not a correctness issue, and far
+          // simpler than trying to tell the two cases apart client-side).
+          // Found via Phase 17 QA: a room left open in one tab never picked
+          // up a member invited after it was opened — the members sheet
+          // silently omitted them and TypingIndicator fell back to
+          // "Someone" for their username, both because RoomHeader/
+          // MembersList/TypingIndicator all read from this same
+          // now-stale room.members array with nothing to ever refresh it.
+          queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
           break;
         case "message.read_by":
           // No room_id on this event (see CLAUDE.md) — the marker already
@@ -169,6 +184,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // so this touches at most one real match.
           queryClient.setQueriesData<MessagesData>({ queryKey: ["messages"] }, (old) =>
             addReadReceipt(old, event.message_id, event.read_by_user_id),
+          );
+          break;
+        case "message.reaction":
+          // No room_id on this event either (see CLAUDE.md) — same broad-
+          // apply-and-no-op pattern as message.read_by above. This is the
+          // only place a reaction toggle's REST call and the toggling
+          // user's own UI update meet: reacting has no client→server WS
+          // event (REST-only to trigger), so even our own toggle is only
+          // reflected here, once the broadcast round-trips back.
+          queryClient.setQueriesData<MessagesData>({ queryKey: ["messages"] }, (old) =>
+            applyReaction(old, event.message_id, event.user_id, event.emoji, event.action),
           );
           break;
         case "error":

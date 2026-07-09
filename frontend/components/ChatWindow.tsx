@@ -6,7 +6,7 @@ import { MessageInput } from "@/components/MessageInput";
 import { MessageList } from "@/components/MessageList";
 import { RoomHeader } from "@/components/RoomHeader";
 import { TypingIndicator } from "@/components/TypingIndicator";
-import { useMessages, useSendMessage } from "@/hooks/useMessages";
+import { useMessages, useSendMessage, useToggleReaction } from "@/hooks/useMessages";
 import { useTyping } from "@/hooks/useTyping";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { RoomDetail } from "@/lib/types";
@@ -18,6 +18,7 @@ import type { RoomDetail } from "@/lib/types";
 export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentUserId: string }) {
   const { messages, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useMessages(room.id);
   const { send: sendMessage, retry: retryMessage } = useSendMessage(room.id);
+  const toggleReaction = useToggleReaction();
   const { joinRoom, leaveRoom } = useWebSocket();
   const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
 
@@ -49,6 +50,7 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
         isFetchingNextPage={isFetchingNextPage}
         onLoadOlder={() => void fetchNextPage()}
         onRetry={retryMessage}
+        onToggleReaction={toggleReaction}
       />
       <TypingIndicator typingUserIds={typingUserIds} members={room.members} />
       <MessageInput onSend={handleSend} onTyping={(value) => (value.trim() ? notifyTyping() : stopTyping())} />

@@ -21,7 +21,7 @@ import {
   type MessagesData,
   type MessagesPage,
 } from "@/lib/messagesCache";
-import type { MessageWithAuthor } from "@/lib/types";
+import type { MessageWithAuthor, ToggleReactionResponse } from "@/lib/types";
 
 // ChatMessage moved to lib/messagesCache (shared with the WS provider); re-
 // exported here so existing `@/hooks/useMessages` imports keep working.
@@ -185,4 +185,25 @@ export function useSendMessage(roomId: string) {
   );
 
   return { send, retry };
+}
+
+// Toggles a reaction on a message. Reacting has no client→server WS event
+// (REST-only to trigger — see CLAUDE.md's WebSocket event contract), but the
+// resulting add/remove broadcasts back over the socket like any other room
+// event, even for our own toggle (this app's deliver-on-receive-only
+// design). So this doesn't touch the message cache itself — it just fires
+// the request and surfaces a toast on failure (e.g. reacting to a message
+// that was deleted moments ago, or a network error); the live
+// message.reaction event (routed centrally in useWebSocket's routeEvent) is
+// what actually updates the UI, the same way a read receipt already works.
+export function useToggleReaction() {
+  return useCallback((messageId: string, emoji: string) => {
+    api.post<ToggleReactionResponse>(`/api/v1/messages/${messageId}/reactions`, { emoji }).catch(() => {
+      toast({
+        variant: "destructive",
+        title: "Couldn't react to message",
+        description: "Check your connection and try again.",
+      });
+    });
+  }, []);
 }

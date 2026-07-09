@@ -198,6 +198,52 @@ export function addReadReceipt(
   return changed ? { ...data, pages } : data;
 }
 
+// Applies a live message.reaction event (added/removed) to a message's
+// grouped reactions[] in place. Same shape as addReadReceipt — this event
+// also carries no room_id (see CLAUDE.md), so callers patch every cached
+// room's messages via queryClient.setQueriesData and rely on this no-op'ing
+// wherever the message isn't found. Also a no-op if the state already
+// matches (e.g. a duplicate delivery), so it's safe to apply blindly.
+export function applyReaction(
+  data: MessagesData | undefined,
+  messageId: string,
+  userId: string,
+  emoji: string,
+  action: "added" | "removed",
+): MessagesData | undefined {
+  if (!data) return data;
+  let changed = false;
+  const pages = data.pages.map((page) =>
+    page.map((m) => {
+      if (m.id !== messageId) return m;
+      const groups = m.reactions;
+      const idx = groups.findIndex((g) => g.emoji === emoji);
+
+      if (action === "added") {
+        if (idx === -1) {
+          changed = true;
+          return { ...m, reactions: [...groups, { emoji, count: 1, user_ids: [userId] }] };
+        }
+        if (groups[idx].user_ids.includes(userId)) return m;
+        changed = true;
+        const next = [...groups];
+        next[idx] = { ...next[idx], count: next[idx].count + 1, user_ids: [...next[idx].user_ids, userId] };
+        return { ...m, reactions: next };
+      }
+
+      if (idx === -1 || !groups[idx].user_ids.includes(userId)) return m;
+      changed = true;
+      const remaining = groups[idx].user_ids.filter((id) => id !== userId);
+      const next =
+        remaining.length === 0
+          ? groups.filter((_, i) => i !== idx)
+          : groups.map((g, i) => (i === idx ? { ...g, count: remaining.length, user_ids: remaining } : g));
+      return { ...m, reactions: next };
+    }),
+  );
+  return changed ? { ...data, pages } : data;
+}
+
 // The created_at of the newest *confirmed* message we hold — the resync anchor.
 // Optimistic/failed bubbles are excluded because their timestamps are
 // client-clock guesses, not server truth.

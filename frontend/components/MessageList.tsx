@@ -18,6 +18,7 @@ interface MessageListProps {
   isFetchingNextPage: boolean;
   onLoadOlder: () => void;
   onRetry: (clientId: string, content: string) => void;
+  onToggleReaction: (messageId: string, emoji: string) => void;
 }
 
 // Scrolling within this many px of the top triggers loading the next-older
@@ -39,7 +40,9 @@ interface RowProps {
   item: VirtualItem;
   message: ChatMessage;
   isOwn: boolean;
+  currentUserId: string;
   onRetry: (clientId: string, content: string) => void;
+  onToggleReaction: (messageId: string, emoji: string) => void;
   measureElement: (el: Element | null) => void;
   observeMessage: (el: HTMLElement | null, messageId: string) => void;
 }
@@ -49,7 +52,16 @@ interface RowProps {
 // functions) — without that, a fresh inline ref closure on every render would
 // make React detach+reattach it (measurement/observation) on every unrelated
 // cache update instead of just the rows that actually changed.
-const Row = memo(function Row({ item, message, isOwn, onRetry, measureElement, observeMessage }: RowProps) {
+const Row = memo(function Row({
+  item,
+  message,
+  isOwn,
+  currentUserId,
+  onRetry,
+  onToggleReaction,
+  measureElement,
+  observeMessage,
+}: RowProps) {
   const setRefs = useCallback(
     (el: HTMLDivElement | null) => {
       measureElement(el);
@@ -65,7 +77,13 @@ const Row = memo(function Row({ item, message, isOwn, onRetry, measureElement, o
       className="absolute inset-x-0 px-6 py-2"
       style={{ transform: `translateY(${item.start}px)` }}
     >
-      <MessageBubble message={message} isOwn={isOwn} onRetry={onRetry} />
+      <MessageBubble
+        message={message}
+        isOwn={isOwn}
+        currentUserId={currentUserId}
+        onRetry={onRetry}
+        onToggleReaction={onToggleReaction}
+      />
     </div>
   );
 });
@@ -79,6 +97,7 @@ export function MessageList({
   isFetchingNextPage,
   onLoadOlder,
   onRetry,
+  onToggleReaction,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Mirrors containerRef.current as reactive state, purely so
@@ -211,7 +230,9 @@ export function MessageList({
                 item={item}
                 message={message}
                 isOwn={message.user.id === currentUserId}
+                currentUserId={currentUserId}
                 onRetry={onRetry}
+                onToggleReaction={onToggleReaction}
                 measureElement={virtualizer.measureElement}
                 observeMessage={observeMessage}
               />

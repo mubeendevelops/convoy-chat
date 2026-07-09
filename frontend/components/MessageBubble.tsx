@@ -1,5 +1,5 @@
-import { memo } from "react";
-import { Check } from "lucide-react";
+import { memo, useState } from "react";
+import { Check, SmilePlus } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { UserPresence } from "@/components/UserPresence";
@@ -7,12 +7,21 @@ import type { ChatMessage } from "@/hooks/useMessages";
 import { formatMessageTimestamp } from "@/lib/messages";
 import { cn } from "@/lib/utils";
 
+// Fixed quick-reaction set — deliberately not a full emoji picker (no such
+// component exists in this project's shadcn set, see CLAUDE.md; adding one
+// wasn't warranted for a "basic" pass). Reacting is REST-only regardless of
+// how the emoji is chosen (see CLAUDE.md's WebSocket event contract).
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢"];
+
 interface MessageBubbleProps {
   message: ChatMessage;
   isOwn: boolean;
+  currentUserId: string;
   /** Re-attempts a failed send in place. Omitted messages (e.g. never own,
    * never failed) never render a control that would need it. */
   onRetry?: (clientId: string, content: string) => void;
+  /** Toggles the caller's reaction with the given emoji on this message. */
+  onToggleReaction?: (messageId: string, emoji: string) => void;
 }
 
 // Locked design decision: every message gets its own full header (avatar +
@@ -21,7 +30,8 @@ interface MessageBubbleProps {
 // WS event (new message, presence flip, typing, read receipt), and most of
 // those touch at most one row — memo means the other N-1 bubbles skip re-
 // rendering instead of re-computing timestamps/avatars for no reason.
-function MessageBubbleComponent({ message, isOwn, onRetry }: MessageBubbleProps) {
+function MessageBubbleComponent({ message, isOwn, currentUserId, onRetry, onToggleReaction }: MessageBubbleProps) {
+  const [pickerOpen, setPickerOpen] = useState(false);
   const isDeleted = !!message.deleted_at;
   const isSending = message.status === "sending";
   const isFailed = message.status === "failed";
@@ -29,6 +39,15 @@ function MessageBubbleComponent({ message, isOwn, onRetry }: MessageBubbleProps)
   // member has read it — read_by is only meaningful once the message is a
   // real, confirmed row (an optimistic/failed bubble's read_by is always []).
   const isRead = isOwn && !message.status && message.read_by.length > 0;
+  // A deleted message 404s on react (mirrors the backend's already-deleted
+  // idiom, see CLAUDE.md); a still-optimistic/failed bubble's id is a client
+  // nonce, not a real message id yet, so reacting to one would 404 too.
+  const canReact = !isDeleted && !message.status;
+
+  function toggle(emoji: string) {
+    onToggleReaction?.(message.id, emoji);
+    setPickerOpen(false);
+  }
 
   return (
     <div className={cn("flex items-start gap-3", isOwn && "flex-row-reverse")} data-message-id={message.id}>
@@ -64,6 +83,54 @@ function MessageBubbleComponent({ message, isOwn, onRetry }: MessageBubbleProps)
         >
           {isDeleted ? "This message was deleted" : message.content}
         </div>
+
+        {canReact && (
+          <div className={cn("flex flex-wrap items-center gap-1 px-1", isOwn && "flex-row-reverse")}>
+            {message.reactions.map((r) => {
+              const mine = r.user_ids.includes(currentUserId);
+              return (
+                <button
+                  key={r.emoji}
+                  type="button"
+                  onClick={() => toggle(r.emoji)}
+                  aria-pressed={mine}
+                  aria-label={`${mine ? "Remove" : "Add"} ${r.emoji} reaction, ${r.count} ${r.count === 1 ? "person" : "people"}`}
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    mine ? "border-primary bg-primary/10" : "border-border bg-background hover:bg-muted",
+                  )}
+                >
+                  <span>{r.emoji}</span>
+                  <span className="text-muted-foreground">{r.count}</span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setPickerOpen((v) => !v)}
+              aria-pressed={pickerOpen}
+              aria-label="Add reaction"
+              className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <SmilePlus className="h-3.5 w-3.5" />
+            </button>
+            {pickerOpen && (
+              <div className="flex items-center gap-0.5 rounded-full border bg-popover px-1 py-0.5 shadow-sm">
+                {QUICK_REACTIONS.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => toggle(emoji)}
+                    aria-label={`React with ${emoji}`}
+                    className="rounded-full p-1 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {isFailed && (
           <p className="flex items-center gap-1.5 px-1 text-xs text-destructive">

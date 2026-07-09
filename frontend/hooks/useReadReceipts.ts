@@ -39,6 +39,10 @@ export function useReadReceipts(container: HTMLElement | null, messages: ChatMes
   // MessageBubble's nested root does — so this avoids depending on which
   // element in that subtree the observer happens to be watching.
   const targetIdsRef = useRef<WeakMap<Element, string>>(new WeakMap());
+  // Rows that called observeMessage before the observer existed yet (see the
+  // effect below) — queued here so the effect can pick them up the moment it
+  // runs, instead of losing them permanently.
+  const pendingRef = useRef<Map<Element, string>>(new Map());
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -72,6 +76,23 @@ export function useReadReceipts(container: HTMLElement | null, messages: ChatMes
     );
     observerRef.current = observer;
 
+    // Drain rows that mounted (and called observeMessage) in the very same
+    // commit that mounted `container` itself — e.g. a room's first-ever
+    // render with history already loaded, or the empty-room-to-first-
+    // message transition. Ref callbacks fire during commit; this effect
+    // only runs after, so those rows' observeMessage calls saw
+    // observerRef.current still null and had nowhere to register — without
+    // this drain they'd never be marked read until they happened to
+    // unmount/remount later (e.g. scrolled out of the virtualized window
+    // and back). Found via Phase 17 QA: a message that was the first thing
+    // rendered into a just-opened room never produced a read receipt even
+    // though it was plainly on screen the whole time.
+    pendingRef.current.forEach((messageId, el) => {
+      targetIdsRef.current.set(el, messageId);
+      observer.observe(el);
+    });
+    pendingRef.current.clear();
+
     return () => {
       observer.disconnect();
       observerRef.current = null;
@@ -80,7 +101,7 @@ export function useReadReceipts(container: HTMLElement | null, messages: ChatMes
 
   return useCallback(
     (el: HTMLElement | null, messageId: string) => {
-      if (!el || !observerRef.current || !currentUserId) return;
+      if (!el || !currentUserId) return;
       const message = messagesRef.current.find((m) => m.id === messageId);
       if (!message) return;
       const eligible =
@@ -89,9 +110,14 @@ export function useReadReceipts(container: HTMLElement | null, messages: ChatMes
         !message.status &&
         !message.read_by.includes(currentUserId) &&
         !sentRef.current.has(message.id);
-      if (eligible) {
+      if (!eligible) return;
+
+      if (observerRef.current) {
         targetIdsRef.current.set(el, messageId);
         observerRef.current.observe(el);
+      } else {
+        // Observer isn't created yet — queue for the effect above to pick up.
+        pendingRef.current.set(el, messageId);
       }
     },
     [currentUserId],
