@@ -2,7 +2,6 @@
 
 import { Users } from "lucide-react";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +11,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { MembersList } from "@/components/MembersList";
 import { getRoomDisplayName, roomTypeLabel } from "@/lib/rooms";
 import type { RoomDetail } from "@/lib/types";
 
@@ -36,16 +36,8 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
           <SheetHeader>
             <SheetTitle>Members</SheetTitle>
           </SheetHeader>
-          <div className="mt-4 space-y-3">
-            {room.members.map((member) => (
-              <div key={member.user.id} className="flex items-center gap-3">
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>{member.user.username.slice(0, 1).toUpperCase()}</AvatarFallback>
-                </Avatar>
-                <span className="min-w-0 flex-1 truncate text-sm">{member.user.username}</span>
-                <Badge variant="outline">{member.role}</Badge>
-              </div>
-            ))}
+          <div className="mt-4">
+            <MembersList members={room.members} />
           </div>
         </SheetContent>
       </Sheet>

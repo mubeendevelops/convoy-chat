@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
+  addReadReceipt,
   messagesQueryKey,
   newestConfirmedCreatedAt,
   PAGE_SIZE,
@@ -134,6 +135,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // A join implies the user is online; the authoritative signal is
           // user.status_changed, which the backend also fans out.
           usePresenceStore.getState().setStatus(event.user.id, "online");
+          break;
+        case "message.read_by":
+          // No room_id on this event (see CLAUDE.md) — the marker already
+          // knows the room they're viewing, but we don't, so patch every
+          // cached room's messages and let addReadReceipt no-op wherever the
+          // message isn't found. In practice only one room's cache is ever
+          // "live" at a time (ChatWindow joins/leaves as the user navigates),
+          // so this touches at most one real match.
+          queryClient.setQueriesData<MessagesData>({ queryKey: ["messages"] }, (old) =>
+            addReadReceipt(old, event.message_id, event.read_by_user_id),
+          );
           break;
         case "error":
           console.warn("ws error event:", event.code, event.message);

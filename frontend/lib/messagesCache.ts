@@ -150,6 +150,31 @@ export function markFailed(data: MessagesData | undefined, clientId: string): Me
   };
 }
 
+// Adds userId to messageId's read_by (deduped, order not meaningful) in
+// response to a live message.read_by event. A no-op MessagesData reference
+// swap when the message isn't found in any held page (e.g. it belongs to a
+// room whose cache isn't loaded) or userId is already recorded, so callers
+// (queryClient.setQueriesData across every room's cache — the event carries
+// no room_id, see CLAUDE.md) can apply this broadly without special-casing.
+export function addReadReceipt(
+  data: MessagesData | undefined,
+  messageId: string,
+  userId: string,
+): MessagesData | undefined {
+  if (!data) return data;
+  let changed = false;
+  const pages = data.pages.map((page) =>
+    page.map((m) => {
+      if (m.id === messageId && !m.read_by.includes(userId)) {
+        changed = true;
+        return { ...m, read_by: [...m.read_by, userId] };
+      }
+      return m;
+    }),
+  );
+  return changed ? { ...data, pages } : data;
+}
+
 // The created_at of the newest *confirmed* message we hold — the resync anchor.
 // Optimistic/failed bubbles are excluded because their timestamps are
 // client-clock guesses, not server truth.

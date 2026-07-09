@@ -6,6 +6,7 @@ import { Loader2, MessageSquare } from "lucide-react";
 import { MessageBubble } from "@/components/MessageBubble";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ChatMessage } from "@/hooks/useMessages";
+import { useReadReceipts } from "@/hooks/useReadReceipts";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -64,6 +65,8 @@ export function MessageList({
     }
     prevMessageCountRef.current = messages.length;
   }, [messages]);
+
+  useReadReceipts(containerRef, messages);
 
   function handleScroll() {
     const el = containerRef.current;

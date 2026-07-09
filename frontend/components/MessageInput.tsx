@@ -9,7 +9,13 @@ import { validateMessageContent } from "@/lib/validation";
 
 const MAX_TEXTAREA_HEIGHT_PX = 160;
 
-export function MessageInput({ onSend }: { onSend: (content: string) => void }) {
+interface MessageInputProps {
+  onSend: (content: string) => void;
+  /** Called with the raw (untrimmed) textarea value on every change. */
+  onTyping?: (content: string) => void;
+}
+
+export function MessageInput({ onSend, onTyping }: MessageInputProps) {
   const [content, setContent] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -47,7 +53,10 @@ export function MessageInput({ onSend }: { onSend: (content: string) => void }) 
         <Textarea
           ref={textareaRef}
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => {
+            setContent(e.target.value);
+            onTyping?.(e.target.value);
+          }}
           onKeyDown={handleKeyDown}
           placeholder="Message..."
           rows={1}

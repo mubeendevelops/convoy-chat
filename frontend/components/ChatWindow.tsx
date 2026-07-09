@@ -5,7 +5,9 @@ import { useEffect } from "react";
 import { MessageInput } from "@/components/MessageInput";
 import { MessageList } from "@/components/MessageList";
 import { RoomHeader } from "@/components/RoomHeader";
+import { TypingIndicator } from "@/components/TypingIndicator";
 import { useMessages, useSendMessage } from "@/hooks/useMessages";
+import { useTyping } from "@/hooks/useTyping";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { RoomDetail } from "@/lib/types";
 
@@ -17,6 +19,7 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
   const { messages, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useMessages(room.id);
   const sendMessage = useSendMessage(room.id);
   const { joinRoom, leaveRoom } = useWebSocket();
+  const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
 
   // Join this room's live stream while it's open; leave on switch/close. Since
   // ChatWindow is keyed by room.id it remounts per room, so this is one clean
@@ -26,6 +29,13 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
     joinRoom(room.id);
     return () => leaveRoom(room.id);
   }, [room.id, joinRoom, leaveRoom]);
+
+  function handleSend(content: string) {
+    // Sending implies typing has stopped — no reason to wait out the idle
+    // debounce once the message is already on its way.
+    stopTyping();
+    sendMessage(content);
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -39,7 +49,8 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
         isFetchingNextPage={isFetchingNextPage}
         onLoadOlder={() => void fetchNextPage()}
       />
-      <MessageInput onSend={sendMessage} />
+      <TypingIndicator typingUserIds={typingUserIds} members={room.members} />
+      <MessageInput onSend={handleSend} onTyping={(value) => (value.trim() ? notifyTyping() : stopTyping())} />
     </div>
   );
 }
