@@ -1,0 +1,130 @@
+# Production-oriented compose: backend + postgres + redis, wired the way a
+# real deploy would want (env-file config, healthchecks, restart policies,
+# explicit dependency ordering) — separate from docker-compose.yml, which is
+# dev-only infra (postgres+redis, no backend, throwaway creds).
+#
+# This file is NOT what Render runs — Render builds the Dockerfile directly
+# against its own managed Postgres/Redis (see DEPLOYMENT.md). It exists so
+# the full stack can be built and rehearsed locally exactly as it'll run in
+# any Docker-based environment (self-host, Railway, Fly, or just a local
+# smoke test before pushing), and so backend+postgres+redis have one
+# reference wiring that isn't tied to any single platform's dashboard.
+#
+# Postgres/Redis intentionally have no `ports:` mapping — only the backend is
+# reachable from the host; the database and cache are only reachable from
+# other containers on the `convoychat` network. Container names and volumes
+# are prefixed `convoychat-prod-*` so this can run alongside the dev compose.
+#
+# `name:` below is load-bearing, not decorative: this file's service keys
+# (postgres, redis) are the same words docker-compose.yml uses for its own
+# services, and both files live in the same directory. Without an explicit
+# project name, Compose defaults both to the directory name and treats them
+# as the SAME project — so `docker compose -f docker-compose.prod.yml up`
+# recognized the dev compose's "postgres"/"redis" service slots as already
+# existing (under different settings) and *recreated* them: it deleted
+# `convoychat-postgres`/`convoychat-redis` and replaced them with this file's
+# containers, even though container_name/volumes were already prefixed
+# differently. The named volumes survived (recreate never deletes volumes),
+# but the containers didn't, and it happened silently, mid-`up`, with no
+# prompt. Pinning a distinct project name is what actually isolates the two
+# files — container/volume name prefixing alone does not.
+#
+# Usage: see the "Prod compose (local build + run)" section of CLAUDE.md's
+# Commands, or DEPLOYMENT.md.
+
+name: convoychat-prod
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: convoychat-prod-postgres
+    restart: unless-stopped
+    # POSTGRES_USER/PASSWORD/DB reach the container via env_file directly —
+    # no explicit environment: block needed, unlike migrate/backend below
+    # which have to compose a DATABASE_URL that env_file passthrough alone
+    # can't derive.
+    env_file: .env.prod
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [convoychat]
+
+  redis:
+    image: redis:7-alpine
+    container_name: convoychat-prod-redis
+    restart: unless-stopped
+    env_file: .env.prod
+    # --requirepass (rather than the dev compose's open Redis) since this
+    # compose is meant to model a real deploy, where an unauthenticated
+    # cache reachable on the network is a real gap, not a convenience.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [convoychat]
+
+  # One-shot init step: applies pending migrations via the same image as
+  # `backend` (see cmd/api/migrate.go), then exits. `backend` won't start
+  # until this exits 0 — see CLAUDE.md's migration-on-deploy strategy for why
+  # migrating is a separate step rather than happening on every server boot.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: convoychat-prod-migrate
+    restart: "no"
+    env_file: .env.prod
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      # -migrate mode never dials Redis, but config.Load() validates REDIS_URL
+      # as required regardless of mode — passing it through here (identical
+      # to backend's) is simpler than branching that shared, already-tested
+      # validation just for this one-shot init container.
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    command: ["-migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [convoychat]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: convoychat-prod-backend
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [convoychat]
+
+networks:
+  convoychat:
+
+volumes:
+  postgres_prod_data:
+  redis_prod_data:

@@ -1,0 +1,34 @@
+# Keep the build context small and never let a stray COPY (or an accidental
+# broadening of the Dockerfile later) pull secrets or unrelated trees into an
+# image layer.
+
+# Env files / secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Go build artifacts
+bin/
+*.test
+*.out
+coverage.*
+
+# Frontend — the backend image never needs it; deployed separately (Vercel)
+frontend/
+
+# Docs / planning (not needed at runtime)
+*.md
+!README.md
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code project state
+.claude/

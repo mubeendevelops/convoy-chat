@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,6 +29,9 @@ func main() {
 }
 
 func run() int {
+	migrateOnly := flag.Bool("migrate", false, "apply pending database migrations, then exit (no server)")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loading config:", err)
@@ -35,6 +39,10 @@ func run() int {
 	}
 
 	logger := newLogger(cfg.AppEnv)
+
+	if *migrateOnly {
+		return runMigrations(cfg, logger)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

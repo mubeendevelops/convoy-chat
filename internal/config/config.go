@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	defaultPort        = 8080
-	defaultAppEnv      = "development"
-	defaultJWTTTL      = 24 * time.Hour
-	defaultCORSOrigins = "http://localhost:3000"
-	minJWTSecretLen    = 32
+	defaultPort           = 8080
+	defaultAppEnv         = "development"
+	defaultJWTTTL         = 24 * time.Hour
+	defaultCORSOrigins    = "http://localhost:3000"
+	defaultMigrationsPath = "migrations"
+	minJWTSecretLen       = 32
 )
 
 // Config holds all runtime configuration loaded from the environment.
@@ -25,6 +26,11 @@ type Config struct {
 	JWTSecret          string
 	JWTTTL             time.Duration
 	CORSAllowedOrigins []string
+	// MigrationsPath is only read by `-migrate` mode (cmd/api/migrate.go); the
+	// normal server path never touches it. Defaults to "migrations" relative
+	// to the working directory, which the Dockerfile's final stage COPYs to
+	// match (see Dockerfile + CLAUDE.md's migration-on-deploy strategy).
+	MigrationsPath string
 }
 
 // Load reads configuration from environment variables, applying defaults for
@@ -38,6 +44,7 @@ func Load() (*Config, error) {
 		JWTSecret:          os.Getenv("JWT_SECRET"),
 		JWTTTL:             defaultJWTTTL,
 		CORSAllowedOrigins: splitAndTrim(getEnv("CORS_ALLOWED_ORIGINS", defaultCORSOrigins)),
+		MigrationsPath:     getEnv("MIGRATIONS_PATH", defaultMigrationsPath),
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
