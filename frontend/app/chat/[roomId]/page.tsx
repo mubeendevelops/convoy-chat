@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { RoomHeader } from "@/components/RoomHeader";
+import { ChatWindow } from "@/components/ChatWindow";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { useRoom } from "@/hooks/useRooms";
@@ -39,14 +39,7 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
     );
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      <RoomHeader room={room} currentUserId={user?.id ?? ""} />
-      <div className="flex flex-1 items-center justify-center p-8 text-center">
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Messages land in Phase 12 — this is just the room shell.
-        </p>
-      </div>
-    </div>
-  );
+  // Keyed by room id so switching rooms remounts ChatWindow fresh instead
+  // of carrying over the previous room's scroll position / send state.
+  return <ChatWindow key={room.id} room={room} currentUserId={user?.id ?? ""} />;
 }

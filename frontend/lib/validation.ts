@@ -1,14 +1,16 @@
 // Mirrors internal/auth/password.go's ValidatePassword,
 // internal/handlers/auth.go's validateUsername/validateEmail, and
-// internal/handlers/rooms.go's validateRoomName exactly, so inline errors
-// shown before submit match what the server would say. The server remains
-// authoritative — this is UX only, not the security boundary.
+// internal/handlers/rooms.go's validateRoomName/internal/handlers/messages.go's
+// validateMessageContent exactly, so inline errors shown before submit match
+// what the server would say. The server remains authoritative — this is UX
+// only, not the security boundary.
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_-]{3,32}$/;
 const MAX_EMAIL_LEN = 255;
 const MIN_PASSWORD_BYTES = 8;
 const MAX_PASSWORD_BYTES = 72; // bcrypt's input limit
 const MAX_ROOM_NAME_LEN = 255;
+const MAX_MESSAGE_CONTENT_LEN = 10000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function validateUsername(username: string): string | null {
@@ -60,4 +62,13 @@ export function validateRoomName(name: string): string | null {
 
 export function isValidUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
+}
+
+// content is expected already-trimmed, same assumption the backend's
+// validateMessageContent makes.
+export function validateMessageContent(content: string): string | null {
+  if (content === "" || content.length > MAX_MESSAGE_CONTENT_LEN) {
+    return `Message must be 1-${MAX_MESSAGE_CONTENT_LEN} characters`;
+  }
+  return null;
 }
