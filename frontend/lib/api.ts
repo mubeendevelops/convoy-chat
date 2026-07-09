@@ -1,25 +1,15 @@
+import { useAuthStore } from "./auth-store";
 import type { ApiErrorBody, ApiErrorCode } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 // Locked decision (plan.md): JWT lives in localStorage, not a cookie — the
-// accepted v1 XSS-readability tradeoff. Centralized here so Phase 10's auth
-// hook/store reads and writes the same key rather than each picking its own.
-const TOKEN_STORAGE_KEY = "convoychat_token";
-
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
-}
-
-export function setToken(token: string): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
-}
-
-export function clearToken(): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+// accepted v1 XSS-readability tradeoff. The Zustand auth store (lib/auth-
+// store.ts) is the single source of truth for it; getState() works outside
+// React components, so this file just reads from it rather than keeping a
+// second copy of the token in its own localStorage key.
+function getToken(): string | null {
+  return useAuthStore.getState().token;
 }
 
 // Thrown for every non-2xx response. `code` matches the backend's
@@ -42,7 +32,7 @@ interface RequestOptions {
   method?: "GET" | "POST" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
-  /** Attach the Bearer token from localStorage. Default true. */
+  /** Attach the Bearer token from the auth store. Default true. */
   auth?: boolean;
 }
 
