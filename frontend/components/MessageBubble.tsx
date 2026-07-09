@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Check } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -6,10 +7,21 @@ import type { ChatMessage } from "@/hooks/useMessages";
 import { formatMessageTimestamp } from "@/lib/messages";
 import { cn } from "@/lib/utils";
 
+interface MessageBubbleProps {
+  message: ChatMessage;
+  isOwn: boolean;
+  /** Re-attempts a failed send in place. Omitted messages (e.g. never own,
+   * never failed) never render a control that would need it. */
+  onRetry?: (clientId: string, content: string) => void;
+}
+
 // Locked design decision: every message gets its own full header (avatar +
 // username + timestamp), no author/time-window grouping — see plan.md
-// Phase 12.
-export function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn: boolean }) {
+// Phase 12. Memoized (Phase 15): a room's list re-renders on every inbound
+// WS event (new message, presence flip, typing, read receipt), and most of
+// those touch at most one row — memo means the other N-1 bubbles skip re-
+// rendering instead of re-computing timestamps/avatars for no reason.
+function MessageBubbleComponent({ message, isOwn, onRetry }: MessageBubbleProps) {
   const isDeleted = !!message.deleted_at;
   const isSending = message.status === "sending";
   const isFailed = message.status === "failed";
@@ -53,7 +65,18 @@ export function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn:
           {isDeleted ? "This message was deleted" : message.content}
         </div>
 
-        {isFailed && <p className="px-1 text-xs text-destructive">Failed to send</p>}
+        {isFailed && (
+          <p className="flex items-center gap-1.5 px-1 text-xs text-destructive">
+            Failed to send
+            <button
+              type="button"
+              onClick={() => onRetry?.(message.id, message.content ?? "")}
+              className="rounded underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              Retry
+            </button>
+          </p>
+        )}
         {isRead && (
           <span
             className="flex items-center gap-0.5 px-1 text-xs text-muted-foreground"
@@ -67,3 +90,5 @@ export function MessageBubble({ message, isOwn }: { message: ChatMessage; isOwn:
     </div>
   );
 }
+
+export const MessageBubble = memo(MessageBubbleComponent);

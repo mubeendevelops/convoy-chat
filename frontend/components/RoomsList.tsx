@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
@@ -12,7 +13,7 @@ import { getRoomDisplayName } from "@/lib/rooms";
 import { cn } from "@/lib/utils";
 import type { Room } from "@/lib/types";
 
-function RoomRow({
+const RoomRow = memo(function RoomRow({
   room,
   isActive,
   currentUserId,
@@ -30,8 +31,10 @@ function RoomRow({
   return (
     <Link
       href={`/chat/${room.id}`}
+      aria-current={isActive ? "page" : undefined}
       className={cn(
         "block truncate rounded-md px-3 py-2 text-sm transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
         isActive
           ? "bg-primary text-primary-foreground"
           : "text-sidebar-foreground hover:bg-accent hover:text-accent-foreground",
@@ -40,7 +43,7 @@ function RoomRow({
       {displayName}
     </Link>
   );
-}
+});
 
 export function RoomsList() {
   const { user } = useAuth();

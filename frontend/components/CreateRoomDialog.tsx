@@ -117,10 +117,11 @@ export function CreateRoomDialog() {
             <DialogDescription>Start a channel or message someone directly.</DialogDescription>
           </DialogHeader>
 
-          <div className="flex gap-2 py-4">
+          <div className="flex gap-2 py-4" role="group" aria-label="Room type">
             <Button
               type="button"
               variant={kind === "channel" ? "default" : "outline"}
+              aria-pressed={kind === "channel"}
               className="flex-1"
               onClick={() => setKind("channel")}
             >
@@ -129,6 +130,7 @@ export function CreateRoomDialog() {
             <Button
               type="button"
               variant={kind === "direct" ? "default" : "outline"}
+              aria-pressed={kind === "direct"}
               className="flex-1"
               onClick={() => setKind("direct")}
             >

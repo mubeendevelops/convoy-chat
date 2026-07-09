@@ -59,8 +59,14 @@ export function MessageInput({ onSend, onTyping }: MessageInputProps) {
           }}
           onKeyDown={handleKeyDown}
           placeholder="Message..."
+          aria-label="Message"
           rows={1}
-          className="min-h-[44px] resize-none overflow-y-auto"
+          // text-base (16px) on every breakpoint, not just below md: iOS
+          // Safari auto-zooms the page on focusing any input under 16px,
+          // which on a phone shoves the composer around right as the
+          // keyboard opens — the one place that's worth overriding the
+          // shared Textarea's md:text-sm.
+          className="min-h-[44px] resize-none overflow-y-auto text-base md:text-base"
         />
         <Button size="icon" onClick={handleSend} disabled={!canSend} aria-label="Send message">
           <Send className="h-4 w-4" />

@@ -17,7 +17,7 @@ import type { RoomDetail } from "@/lib/types";
 // room's scroll position and in-flight-send state.
 export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentUserId: string }) {
   const { messages, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useMessages(room.id);
-  const sendMessage = useSendMessage(room.id);
+  const { send: sendMessage, retry: retryMessage } = useSendMessage(room.id);
   const { joinRoom, leaveRoom } = useWebSocket();
   const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
 
@@ -48,6 +48,7 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
         hasNextPage={!!hasNextPage}
         isFetchingNextPage={isFetchingNextPage}
         onLoadOlder={() => void fetchNextPage()}
+        onRetry={retryMessage}
       />
       <TypingIndicator typingUserIds={typingUserIds} members={room.members} />
       <MessageInput onSend={handleSend} onTyping={(value) => (value.trim() ? notifyTyping() : stopTyping())} />

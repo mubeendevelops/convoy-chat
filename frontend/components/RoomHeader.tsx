@@ -12,6 +12,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { MembersList } from "@/components/MembersList";
+import { MobileSidebarTrigger } from "@/components/MobileSidebarTrigger";
 import { getRoomDisplayName, roomTypeLabel } from "@/lib/rooms";
 import type { RoomDetail } from "@/lib/types";
 
@@ -19,10 +20,13 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
   const displayName = getRoomDisplayName(room, currentUserId, room.members);
 
   return (
-    <header className="flex items-center justify-between gap-4 border-b px-6 py-4">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="flex items-center justify-between gap-4 border-b px-3 py-4 md:px-6">
+      <div className="flex min-w-0 items-center gap-1 md:gap-3">
+        <MobileSidebarTrigger />
         <h1 className="truncate text-lg font-semibold">{displayName}</h1>
-        <Badge variant="secondary">{roomTypeLabel(room.type)}</Badge>
+        <Badge variant="secondary" className="hidden shrink-0 sm:inline-flex">
+          {roomTypeLabel(room.type)}
+        </Badge>
       </div>
 
       <Sheet>

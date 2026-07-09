@@ -67,6 +67,15 @@ function findById(pages: MessagesPage[], id: string): boolean {
   return pages.some((page) => page.some((m) => m.id === id));
 }
 
+// Looks up a single message by id across all held pages — used by the send
+// hook to check a bubble's current status before applying a transition (e.g.
+// only flip an ack-timeout to "failed", or a retry click to "sending", if
+// that's actually still its state — it may have already been reconciled by a
+// live event or resync in the background).
+export function findMessage(data: MessagesData | undefined, id: string): ChatMessage | undefined {
+  return data?.pages.flat().find((m) => m.id === id);
+}
+
 // Replaces the first message matching `pred` with `replacement`, or returns
 // null if none matched (so the caller can fall through to the next rule).
 function replaceFirst(
@@ -150,6 +159,20 @@ export function markFailed(data: MessagesData | undefined, clientId: string): Me
   };
 }
 
+// The retry counterpart: flips a "failed" bubble back to "sending" right
+// before re-attempting it (see useSendMessage's retry). A no-op if the
+// bubble is already gone (e.g. a resync reconciled it in the background
+// before the user clicked retry).
+export function markSending(data: MessagesData | undefined, clientId: string): MessagesData | undefined {
+  if (!data) return data;
+  return {
+    ...data,
+    pages: data.pages.map((page) =>
+      page.map((m) => (m.id === clientId && m.status === "failed" ? { ...m, status: "sending" as const } : m)),
+    ),
+  };
+}
+
 // Adds userId to messageId's read_by (deduped, order not meaningful) in
 // response to a live message.read_by event. A no-op MessagesData reference
 // swap when the message isn't found in any held page (e.g. it belongs to a
@@ -191,6 +214,21 @@ export function newestConfirmedCreatedAt(data: MessagesData | undefined): string
 // optimistic one on the rare collision), and sort ascending by created_at with
 // id as a stable tiebreak — the render order, stable across page merges and
 // live inserts.
+//
+// Sorts by parsed time value, not by comparing the created_at strings
+// directly: an optimistic bubble's timestamp is a client new Date().
+// toISOString() (always UTC, "Z" suffix), but the backend's own
+// created_at comes back with the server's local offset (e.g.
+// "+05:30") rather than normalized to UTC — two ISO 8601 strings in
+// different offsets don't sort correctly by plain string comparison even
+// though Date correctly parses either. Found via Phase 15's virtualization
+// scroll-preservation test: a locally-only failed bubble sorted into the
+// middle of the list instead of at the end, because its "Z" string
+// lexicographically preceded the server's "+05:30"-suffixed ones for the
+// same clock time. Every other created_at comparison in this file only
+// ever compares same-origin (server-to-server) timestamps, so it isn't
+// exposed to this — this is the one place client and server timestamps are
+// ordered against each other.
 export function flattenSortedDedup(data: MessagesData | undefined): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
   for (const m of data?.pages.flat() ?? []) {
@@ -200,6 +238,6 @@ export function flattenSortedDedup(data: MessagesData | undefined): ChatMessage[
     }
   }
   return Array.from(byId.values()).sort(
-    (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id.localeCompare(b.id),
   );
 }

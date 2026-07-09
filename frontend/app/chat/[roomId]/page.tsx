@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { ChatWindow } from "@/components/ChatWindow";
+import { MobileSidebarTrigger } from "@/components/MobileSidebarTrigger";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { useRoom } from "@/hooks/useRooms";
@@ -15,7 +16,8 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
   if (isLoading) {
     return (
       <div className="flex h-full flex-col">
-        <div className="border-b px-6 py-4">
+        <div className="flex items-center gap-2 border-b px-3 py-4 md:px-6">
+          <MobileSidebarTrigger />
           <Skeleton className="h-7 w-48" />
         </div>
         <div className="flex-1 p-6">
@@ -30,11 +32,16 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
     // CLAUDE.md) — one generic recovery path covers both correctly.
     const message = error instanceof ApiError ? error.message : "Couldn't load this room.";
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-        <p className="text-sm text-muted-foreground">{message}</p>
-        <Link href="/chat" className="text-sm text-primary underline-offset-4 hover:underline">
-          Back to rooms
-        </Link>
+      <div className="flex h-full flex-col">
+        <div className="flex items-center gap-2 border-b px-3 py-4 md:px-6 md:hidden">
+          <MobileSidebarTrigger />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+          <p className="text-sm text-muted-foreground">{message}</p>
+          <Link href="/chat" className="text-sm text-primary underline-offset-4 hover:underline">
+            Back to rooms
+          </Link>
+        </div>
       </div>
     );
   }

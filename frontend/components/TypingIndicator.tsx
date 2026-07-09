@@ -23,5 +23,9 @@ export function TypingIndicator({
         ? `${usernameFor(typingUserIds[0], members)} is typing…`
         : "Several people are typing…";
 
-  return <div className="h-5 truncate px-6 text-xs italic text-muted-foreground">{text}</div>;
+  return (
+    <div role="status" aria-live="polite" className="h-5 truncate px-6 text-xs italic text-muted-foreground">
+      {text}
+    </div>
+  );
 }

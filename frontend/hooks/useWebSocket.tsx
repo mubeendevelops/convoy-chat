@@ -35,12 +35,19 @@ type Handler<T extends ServerEventType> = (event: Extract<ServerEvent, { type: T
 
 interface WebSocketContextValue {
   status: ConnStatus;
+  /** True once the socket has completed at least one successful handshake —
+   * lets consumers (the reconnecting banner) distinguish "still doing the
+   * first connect" from "was open, dropped, now reconnecting". */
+  hasConnectedOnce: boolean;
   /** Send a typed client event. Returns true only if it went out (socket open). */
   send: (event: ClientEvent) => boolean;
   /** Register a listener for one server event type; returns an unsubscribe fn. */
   subscribe: <T extends ServerEventType>(type: T, handler: Handler<T>) => () => void;
   joinRoom: (roomId: string) => void;
   leaveRoom: (roomId: string) => void;
+  /** Skip the remaining backoff wait and retry immediately. A harmless no-op
+   * if a connection attempt is already open or in flight. */
+  reconnectNow: () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
@@ -57,6 +64,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
   const [status, setStatus] = useState<ConnStatus>("connecting");
+  const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -65,6 +73,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const hasConnectedOnceRef = useRef(false);
   const joinedRoomsRef = useRef<Set<string>>(new Set());
   const subscribersRef = useRef<Map<ServerEventType, Set<(e: ServerEvent) => void>>>(new Map());
+  // Populated inside the connection effect so reconnectNow (a stable
+  // useCallback declared outside it) can trigger an out-of-band connect.
+  const connectFnRef = useRef<() => void>(() => {});
 
   // ---- Context API (stable references, read live socket/refs) ----
 
@@ -92,6 +103,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     },
     [send],
   );
+
+  const reconnectNow = useCallback(() => {
+    const ws = wsRef.current;
+    // Already open or a handshake already in flight — forcing a second
+    // connect() here would orphan that socket instead of helping.
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptsRef.current = 0;
+    connectFnRef.current();
+  }, []);
 
   const subscribe = useCallback(<T extends ServerEventType>(type: T, handler: Handler<T>) => {
     let set = subscribersRef.current.get(type);
@@ -221,10 +245,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // Guards against a rare overlap: reconnectNow() (or two close events
+        // in quick succession) can start a newer attempt before this one's
+        // own event fires. Without this check, a stale socket's belated
+        // onopen/onclose would clobber wsRef/status/reconnect scheduling out
+        // from under the connection that's actually current.
+        if (wsRef.current !== ws) return;
         reconnectAttemptsRef.current = 0;
         setStatus("open");
         const isReconnect = hasConnectedOnceRef.current;
         hasConnectedOnceRef.current = true;
+        setHasConnectedOnce(true);
         // Re-join every active room. On a reconnect (not the first connect,
         // whose history the initial query already loaded), also backfill.
         joinedRoomsRef.current.forEach((roomId) => {
@@ -244,6 +275,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       };
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return; // superseded by a newer attempt — see onopen
         wsRef.current = null;
         setStatus("closed");
         if (!intentionalCloseRef.current) scheduleReconnect();
@@ -255,6 +287,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    connectFnRef.current = connect;
     connect();
 
     return () => {
@@ -273,7 +306,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [token, hasHydrated, routeEvent, resyncRoom]);
 
   return (
-    <WebSocketContext.Provider value={{ status, send, subscribe, joinRoom, leaveRoom }}>
+    <WebSocketContext.Provider
+      value={{ status, hasConnectedOnce, send, subscribe, joinRoom, leaveRoom, reconnectNow }}
+    >
       {children}
     </WebSocketContext.Provider>
   );
