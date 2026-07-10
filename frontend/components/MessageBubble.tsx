@@ -1,5 +1,5 @@
-import { memo, useState } from "react";
-import { Check, SmilePlus, Trash2 } from "lucide-react";
+import { memo, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Check, Pencil, SmilePlus, Trash2, X } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { UserPresence } from "@/components/UserPresence";
 import type { ChatMessage } from "@/hooks/useMessages";
 import { formatMessageTimestamp } from "@/lib/messages";
 import { cn } from "@/lib/utils";
+import { validateMessageContent } from "@/lib/validation";
 
 // Fixed quick-reaction set — deliberately not a full emoji picker (no such
 // component exists in this project's shadcn set, see CLAUDE.md; adding one
@@ -39,6 +41,10 @@ interface MessageBubbleProps {
   /** Soft-deletes this message. Only wired up when the current user is
    * allowed to (own message or room admin). */
   onDelete?: (messageId: string) => void;
+  /** Edits this message's content in place. Unlike onDelete, this is
+   * author-only with no admin override (see CLAUDE.md) — isOwn alone gates
+   * the affordance, isRoomAdmin never does. */
+  onEdit?: (messageId: string, content: string) => void;
 }
 
 // Locked design decision: every message gets its own full header (avatar +
@@ -55,9 +61,13 @@ function MessageBubbleComponent({
   onToggleReaction,
   isRoomAdmin,
   onDelete,
+  onEdit,
 }: MessageBubbleProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const isDeleted = !!message.deleted_at;
   const isSending = message.status === "sending";
   const isFailed = message.status === "failed";
@@ -74,6 +84,22 @@ function MessageBubbleComponent({
   // no real id yet — either would 404). canDelete ⊆ canReact, so its control
   // lives in the same actions row.
   const canDelete = canReact && !!onDelete && (isOwn || !!isRoomAdmin);
+  // Author-only, no admin override — matches the backend's PATCH
+  // /messages/{id} rule (see CLAUDE.md): a room admin can remove disruptive
+  // content but not rewrite someone else's words.
+  const canEdit = canReact && !!onEdit && isOwn;
+  const editInvalid = validateMessageContent(editContent.trim());
+
+  // Autofocus + place the caret at the end when entering edit mode, rather
+  // than selecting all — editing existing text usually means appending or
+  // fixing a typo near the end, not retyping from scratch.
+  useLayoutEffect(() => {
+    if (!isEditing) return;
+    const el = editTextareaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [isEditing]);
 
   function toggle(emoji: string) {
     onToggleReaction?.(message.id, emoji);
@@ -83,6 +109,36 @@ function MessageBubbleComponent({
   function confirmDelete() {
     onDelete?.(message.id);
     setConfirmDeleteOpen(false);
+  }
+
+  function startEdit() {
+    setEditContent(message.content ?? "");
+    setIsEditing(true);
+  }
+
+  function cancelEdit() {
+    setIsEditing(false);
+  }
+
+  function saveEdit() {
+    const trimmed = editContent.trim();
+    if (validateMessageContent(trimmed)) return;
+    // No-op if unchanged — nothing to send, and it saves the recipient side
+    // an idempotent-but-pointless broadcast.
+    if (trimmed !== message.content) {
+      onEdit?.(message.id, trimmed);
+    }
+    setIsEditing(false);
+  }
+
+  function handleEditKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      saveEdit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEdit();
+    }
   }
 
   return (
@@ -104,23 +160,55 @@ function MessageBubbleComponent({
           >
             {formatMessageTimestamp(message.created_at)}
           </span>
-        </div>
-
-        <div
-          className={cn(
-            "whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm",
-            isDeleted
-              ? "bg-muted italic text-muted-foreground"
-              : isOwn
-                ? "bg-bubble-outgoing text-bubble-outgoing-foreground"
-                : "bg-bubble-incoming text-bubble-incoming-foreground",
-            isSending && "opacity-60",
+          {!isDeleted && message.edited_at && (
+            <span
+              className="shrink-0 text-xs text-muted-foreground"
+              title={`Edited ${new Date(message.edited_at).toLocaleString()}`}
+            >
+              (edited)
+            </span>
           )}
-        >
-          {isDeleted ? "This message was deleted" : message.content}
         </div>
 
-        {canReact && (
+        {isEditing ? (
+          <div className="flex w-full flex-col gap-1.5">
+            <Textarea
+              ref={editTextareaRef}
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              aria-label="Edit message"
+              rows={1}
+              className="min-h-[44px] w-full resize-none overflow-y-auto text-sm"
+            />
+            <div className={cn("flex items-center gap-2", isOwn && "flex-row-reverse")}>
+              <Button size="sm" onClick={saveEdit} disabled={!!editInvalid}>
+                <Check className="mr-1 h-3.5 w-3.5" />
+                Save
+              </Button>
+              <Button size="sm" variant="ghost" onClick={cancelEdit}>
+                <X className="mr-1 h-3.5 w-3.5" />
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className={cn(
+              "whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm",
+              isDeleted
+                ? "bg-muted italic text-muted-foreground"
+                : isOwn
+                  ? "bg-bubble-outgoing text-bubble-outgoing-foreground"
+                  : "bg-bubble-incoming text-bubble-incoming-foreground",
+              isSending && "opacity-60",
+            )}
+          >
+            {isDeleted ? "This message was deleted" : message.content}
+          </div>
+        )}
+
+        {canReact && !isEditing && (
           <div className={cn("flex flex-wrap items-center gap-1 px-1", isOwn && "flex-row-reverse")}>
             {message.reactions.map((r) => {
               const mine = r.user_ids.includes(currentUserId);
@@ -164,6 +252,16 @@ function MessageBubbleComponent({
                   </button>
                 ))}
               </div>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={startEdit}
+                aria-label="Edit message"
+                className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
             )}
             {canDelete && (
               <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>

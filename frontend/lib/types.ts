@@ -100,6 +100,7 @@ export interface MessageWithAuthor {
   user: UserSummary;
   content: string | null;
   message_type: MessageType;
+  edited_at?: string;
   deleted_at?: string;
   created_at: string;
   updated_at: string;
@@ -171,6 +172,20 @@ export interface SendMessageRequest {
 
 export interface DeleteMessageResponse {
   status: "deleted";
+}
+
+export interface EditMessageRequest {
+  content: string;
+}
+
+// PATCH /messages/{id} response — a minimal, purpose-built shape rather than
+// the full MessageWithAuthor (see internal/handlers/messages.go): content
+// and edited_at are the only fields an edit changes.
+export interface EditMessageResponse {
+  id: string;
+  room_id: string;
+  content: string;
+  edited_at: string;
 }
 
 export interface ToggleReactionRequest {
@@ -275,4 +290,5 @@ export type ServerEvent =
       emoji: string;
       action: "added" | "removed";
     }
+  | { type: "message.edited"; id: string; room_id: string; content: string; edited_at: string }
   | { type: "error"; code: WsErrorCode; message: string };

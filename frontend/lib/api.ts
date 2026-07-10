@@ -29,7 +29,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
   /** Attach the Bearer token from the auth store. Default true. */
@@ -192,6 +192,8 @@ export const api = {
     request<T>(path, { ...options, method: "GET" }),
   post: <T>(path: string, body?: unknown, options?: BodylessOptions) =>
     request<T>(path, { ...options, method: "POST", body }),
+  patch: <T>(path: string, body?: unknown, options?: BodylessOptions) =>
+    request<T>(path, { ...options, method: "PATCH", body }),
   delete: <T>(path: string, options?: BodylessOptions) =>
     request<T>(path, { ...options, method: "DELETE" }),
 };

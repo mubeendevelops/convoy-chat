@@ -21,6 +21,7 @@ interface MessageListProps {
   onToggleReaction: (messageId: string, emoji: string) => void;
   isRoomAdmin: boolean;
   onDelete: (messageId: string) => void;
+  onEdit: (messageId: string, content: string) => void;
 }
 
 // Scrolling within this many px of the top triggers loading the next-older
@@ -47,6 +48,7 @@ interface RowProps {
   onToggleReaction: (messageId: string, emoji: string) => void;
   isRoomAdmin: boolean;
   onDelete: (messageId: string) => void;
+  onEdit: (messageId: string, content: string) => void;
   measureElement: (el: Element | null) => void;
   observeMessage: (el: HTMLElement | null, messageId: string) => void;
 }
@@ -65,6 +67,7 @@ const Row = memo(function Row({
   onToggleReaction,
   isRoomAdmin,
   onDelete,
+  onEdit,
   measureElement,
   observeMessage,
 }: RowProps) {
@@ -91,6 +94,7 @@ const Row = memo(function Row({
         onToggleReaction={onToggleReaction}
         isRoomAdmin={isRoomAdmin}
         onDelete={onDelete}
+        onEdit={onEdit}
       />
     </div>
   );
@@ -108,6 +112,7 @@ export function MessageList({
   onToggleReaction,
   isRoomAdmin,
   onDelete,
+  onEdit,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Mirrors containerRef.current as reactive state, purely so
@@ -245,6 +250,7 @@ export function MessageList({
                 onToggleReaction={onToggleReaction}
                 isRoomAdmin={isRoomAdmin}
                 onDelete={onDelete}
+                onEdit={onEdit}
                 measureElement={virtualizer.measureElement}
                 observeMessage={observeMessage}
               />

@@ -199,6 +199,36 @@ export function markDeleted(
   return changed ? { ...data, pages } : data;
 }
 
+// Patches a message's content + edited_at in place — used for the optimistic
+// edit (client-guessed edited_at), to reconcile the confirmed PATCH response
+// (server clock authority), and for a live message.edited event on other
+// clients. Deliberately leaves read_by/reactions untouched, since an edit
+// doesn't change either — the REST/WS payloads for an edit are minimal
+// (content + edited_at only) for exactly this reason, see CLAUDE.md. A no-op
+// reference swap if the message isn't held (e.g. a room whose cache isn't
+// loaded) or is already deleted (content can't un-delete via an edit that
+// raced a delete — the server's own 404 in that case wins, this is just the
+// optimistic guess declining to jump ahead of it).
+export function applyEdit(
+  data: MessagesData | undefined,
+  messageId: string,
+  content: string,
+  editedAt: string,
+): MessagesData | undefined {
+  if (!data) return data;
+  let changed = false;
+  const pages = data.pages.map((page) =>
+    page.map((m) => {
+      if (m.id === messageId && !m.deleted_at) {
+        changed = true;
+        return { ...m, content, edited_at: editedAt };
+      }
+      return m;
+    }),
+  );
+  return changed ? { ...data, pages } : data;
+}
+
 // Adds userId to messageId's read_by (deduped, order not meaningful) in
 // response to a live message.read_by event. A no-op MessagesData reference
 // swap when the message isn't found in any held page (e.g. it belongs to a

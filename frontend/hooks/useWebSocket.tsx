@@ -7,6 +7,7 @@ import { api, isAccessTokenExpiringSoon, refreshAccessToken } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   addReadReceipt,
+  applyEdit,
   applyReaction,
   messagesQueryKey,
   newestConfirmedCreatedAt,
@@ -212,6 +213,18 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // reflected here, once the broadcast round-trips back.
           queryClient.setQueriesData<MessagesData>({ queryKey: ["messages"] }, (old) =>
             applyReaction(old, event.message_id, event.user_id, event.emoji, event.action),
+          );
+          break;
+        case "message.edited":
+          // Unlike message.read_by/message.reaction, this event does carry a
+          // room_id (see CLAUDE.md), so it can target that room's cache
+          // directly rather than broad-applying across every cached room.
+          // Reaches every client watching the room, including the editor's
+          // own — their optimistic edit (useEditMessage) already applied the
+          // same content, so this is a harmless idempotent re-application,
+          // just now with the server's authoritative edited_at.
+          queryClient.setQueryData<MessagesData>(messagesQueryKey(event.room_id), (old) =>
+            applyEdit(old, event.id, event.content, event.edited_at),
           );
           break;
         case "error":

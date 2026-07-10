@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -222,5 +223,116 @@ func DeleteMessage(s *store.Store) http.HandlerFunc {
 		}
 
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}
+
+type editMessageRequest struct {
+	Content string `json:"content"`
+}
+
+// editMessageResponse is a minimal, purpose-built shape rather than the full
+// MessageWithAuthor: content and edited_at are the only fields an edit
+// changes, and the caller's already-cached copy already holds an accurate
+// author/reactions/read_by — echoing those back here would mean either an
+// extra batch-fetch to keep them honest or (worse) silently serving stale
+// empty defaults for them, like a freshly-inserted message's response
+// correctly does but an edited message's would not.
+type editMessageResponse struct {
+	ID       uuid.UUID `json:"id"`
+	RoomID   uuid.UUID `json:"room_id"`
+	Content  string    `json:"content"`
+	EditedAt time.Time `json:"edited_at"`
+}
+
+// messageEditedEvent matches the WS "message.edited" shape: {"type",
+// "id","room_id","content","edited_at"} — same minimal shape as the REST
+// response above, and same publishing pattern as reactionEvent
+// (internal/handlers/reactions.go): a REST handler calling
+// store.PublishRoomEvent directly, no dependency on internal/websocket.
+type messageEditedEvent struct {
+	Type     string    `json:"type"`
+	ID       uuid.UUID `json:"id"`
+	RoomID   uuid.UUID `json:"room_id"`
+	Content  string    `json:"content"`
+	EditedAt time.Time `json:"edited_at"`
+}
+
+// EditMessage handles PATCH /api/v1/messages/{message_id}. Author-only — no
+// admin override, unlike DeleteMessage: a room admin may remove disruptive
+// content, but rewriting someone else's words is a different, more invasive
+// power this app doesn't grant. Editing an already-deleted (or nonexistent)
+// message 404s, matching DeleteMessage/ToggleReaction's "already gone → 404,
+// not a silent no-op" idiom.
+func EditMessage(s *store.Store, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+
+		messageID, err := uuid.Parse(chi.URLParam(r, "message_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "message_id must be a valid UUID")
+			return
+		}
+
+		var req editMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "request body must be valid JSON")
+			return
+		}
+		content := strings.TrimSpace(req.Content)
+		if err := validateMessageContent(content); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
+			return
+		}
+
+		message, err := s.GetMessageByID(r.Context(), messageID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "message not found")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to look up message")
+			return
+		}
+		if message.DeletedAt != nil {
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "message not found")
+			return
+		}
+		if message.UserID != userID {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden", "only the author can edit this message")
+			return
+		}
+
+		editedAt, err := s.EditMessage(r.Context(), messageID, content)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "message not found")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to edit message")
+			return
+		}
+
+		// The edit is already persisted at this point, so a broadcast hiccup
+		// shouldn't fail the request back to the caller — logged, not fatal,
+		// same philosophy as ToggleReaction's publish step.
+		payload, err := json.Marshal(messageEditedEvent{
+			Type:     "message.edited",
+			ID:       messageID,
+			RoomID:   message.RoomID,
+			Content:  content,
+			EditedAt: editedAt,
+		})
+		if err != nil {
+			logger.Error("marshaling message.edited event failed", "message_id", messageID, "error", err)
+		} else if err := s.PublishRoomEvent(r.Context(), message.RoomID, payload); err != nil {
+			logger.Warn("publishing message.edited event failed", "message_id", messageID, "room_id", message.RoomID, "error", err)
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, editMessageResponse{
+			ID:       messageID,
+			RoomID:   message.RoomID,
+			Content:  content,
+			EditedAt: editedAt,
+		})
 	}
 }

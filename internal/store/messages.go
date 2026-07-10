@@ -13,7 +13,7 @@ import (
 )
 
 const messageWithAuthorColumns = `
-	m.id, m.room_id, m.content, m.message_type, m.deleted_at, m.created_at, m.updated_at,
+	m.id, m.room_id, m.content, m.message_type, m.edited_at, m.deleted_at, m.created_at, m.updated_at,
 	u.id, u.username, u.avatar_url`
 
 const messageIdempotencyTTL = 5 * time.Minute
@@ -29,7 +29,7 @@ func scanMessageWithAuthor(row pgx.Row) (*models.MessageWithAuthor, error) {
 	var m models.MessageWithAuthor
 	var content string
 	err := row.Scan(
-		&m.ID, &m.RoomID, &content, &m.MessageType, &m.DeletedAt, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.RoomID, &content, &m.MessageType, &m.EditedAt, &m.DeletedAt, &m.CreatedAt, &m.UpdatedAt,
 		&m.User.ID, &m.User.Username, &m.User.AvatarURL,
 	)
 	if err != nil {
@@ -54,7 +54,7 @@ func (s *Store) InsertMessage(ctx context.Context, roomID, userID uuid.UUID, con
 		WITH inserted AS (
 			INSERT INTO messages (id, room_id, user_id, content, message_type)
 			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id, room_id, user_id, content, message_type, deleted_at, created_at, updated_at
+			RETURNING id, room_id, user_id, content, message_type, edited_at, deleted_at, created_at, updated_at
 		)
 		SELECT ` + messageWithAuthorColumns + `
 		FROM inserted m
@@ -125,13 +125,13 @@ func (s *Store) ListRoomMessages(ctx context.Context, roomID uuid.UUID, limit in
 // a delete.
 func (s *Store) GetMessageByID(ctx context.Context, id uuid.UUID) (*models.Message, error) {
 	const q = `
-		SELECT id, room_id, user_id, content, message_type, metadata, deleted_at, created_at, updated_at
+		SELECT id, room_id, user_id, content, message_type, metadata, edited_at, deleted_at, created_at, updated_at
 		FROM messages
 		WHERE id = $1`
 
 	var m models.Message
 	err := s.DB.QueryRow(ctx, q, id).Scan(
-		&m.ID, &m.RoomID, &m.UserID, &m.Content, &m.MessageType, &m.Metadata, &m.DeletedAt, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.RoomID, &m.UserID, &m.Content, &m.MessageType, &m.Metadata, &m.EditedAt, &m.DeletedAt, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -156,6 +156,30 @@ func (s *Store) SoftDeleteMessage(ctx context.Context, id uuid.UUID) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// EditMessage updates a message's content and stamps edited_at. Mirrors
+// SoftDeleteMessage's idiom — WHERE deleted_at IS NULL, zero rows affected →
+// ErrNotFound — so editing an already-deleted message 404s rather than
+// silently no-op'ing (matches DeleteMessage's precedent), and a delete that
+// races this edit is caught rather than resurrecting content on a deleted
+// row. Author-only enforcement happens in the handler (which already holds
+// the message for that check); this method doesn't re-verify ownership.
+func (s *Store) EditMessage(ctx context.Context, id uuid.UUID, content string) (editedAt time.Time, err error) {
+	const q = `
+		UPDATE messages
+		SET content = $2, edited_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING edited_at`
+
+	err = s.DB.QueryRow(ctx, q, id, content).Scan(&editedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, ErrNotFound
+		}
+		return time.Time{}, fmt.Errorf("editing message: %w", err)
+	}
+	return editedAt, nil
 }
 
 func messageIdempotencyKey(roomID, userID uuid.UUID, key string) string {

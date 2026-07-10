@@ -155,6 +155,60 @@ func TestSoftDeleteMessage(t *testing.T) {
 	})
 }
 
+func TestEditMessage(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	author := mustCreateUser(t, s, "author")
+	room := mustCreateRoom(t, s, author)
+
+	msg, err := s.InsertMessage(ctx, room, author, "original text", models.MessageTypeText)
+	if err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	if msg.EditedAt != nil {
+		t.Errorf("a freshly-inserted message should have a nil edited_at, got %v", msg.EditedAt)
+	}
+
+	editedAt, err := s.EditMessage(ctx, msg.ID, "edited text")
+	if err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	if editedAt.IsZero() {
+		t.Error("expected a non-zero edited_at")
+	}
+
+	t.Run("history reflects the new content and edited_at", func(t *testing.T) {
+		page, err := s.ListRoomMessages(ctx, room, 10, nil)
+		if err != nil {
+			t.Fatalf("ListRoomMessages: %v", err)
+		}
+		if len(page) != 1 {
+			t.Fatalf("got %d messages, want 1", len(page))
+		}
+		if page[0].Content == nil || *page[0].Content != "edited text" {
+			t.Errorf("got content %v, want %q", page[0].Content, "edited text")
+		}
+		if page[0].EditedAt == nil || !page[0].EditedAt.Equal(editedAt) {
+			t.Errorf("got edited_at %v, want %v", page[0].EditedAt, editedAt)
+		}
+	})
+
+	t.Run("editing an already-deleted message 404s", func(t *testing.T) {
+		if err := s.SoftDeleteMessage(ctx, msg.ID); err != nil {
+			t.Fatalf("SoftDeleteMessage: %v", err)
+		}
+		if _, err := s.EditMessage(ctx, msg.ID, "should not apply"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("got error %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("editing a nonexistent message 404s", func(t *testing.T) {
+		if _, err := s.EditMessage(ctx, uuid.New(), "irrelevant"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("got error %v, want ErrNotFound", err)
+		}
+	})
+}
+
 func TestMessageIdempotencyKey(t *testing.T) {
 	s := testutil.NewStore(t)
 	ctx := t.Context()

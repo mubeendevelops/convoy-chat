@@ -72,6 +72,7 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 
 			r.Get("/rooms/{room_id}/messages", handlers.ListMessages(st))
 			r.Post("/rooms/{room_id}/messages", handlers.SendMessage(st))
+			r.Patch("/messages/{message_id}", handlers.EditMessage(st, logger))
 			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st))
 			r.Post("/messages/{message_id}/reactions", handlers.ToggleReaction(st, logger))
 		})

@@ -24,6 +24,7 @@ type Message struct {
 	Content     string          `json:"content"`
 	MessageType MessageType     `json:"message_type"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	EditedAt    *time.Time      `json:"edited_at,omitempty"`
 	DeletedAt   *time.Time      `json:"deleted_at,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
@@ -35,13 +36,16 @@ type Message struct {
 // rather than the original text, which is retained in the database but
 // never served back through this shape. ReadBy/Reactions reflect existing
 // read/reaction activity even on a deleted message — that activity happened
-// and isn't masked, unlike the message text itself.
+// and isn't masked, unlike the message text itself. EditedAt is nil unless
+// the message has been edited (PATCH /messages/{id}, author-only) at least
+// once — the frontend's "(edited)" indicator keys off its presence.
 type MessageWithAuthor struct {
 	ID          uuid.UUID                `json:"id"`
 	RoomID      uuid.UUID                `json:"room_id"`
 	User        UserSummary              `json:"user"`
 	Content     *string                  `json:"content"`
 	MessageType MessageType              `json:"message_type"`
+	EditedAt    *time.Time               `json:"edited_at,omitempty"`
 	DeletedAt   *time.Time               `json:"deleted_at,omitempty"`
 	CreatedAt   time.Time                `json:"created_at"`
 	UpdatedAt   time.Time                `json:"updated_at"`

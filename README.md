@@ -6,8 +6,9 @@ Redis for presence state and cross-server Pub/Sub broadcast.
 
 **Features:** JWT auth with refresh-token rotation · channels + direct
 messages · room/member management · real-time messaging with persistence and
-history · presence (online/away/offline) · typing indicators · read receipts
-· emoji reactions · multi-server broadcast via Redis Pub/Sub.
+history, editing, and deletion · presence (online/away/offline) · typing
+indicators · read receipts · emoji reactions · multi-server broadcast via
+Redis Pub/Sub.
 
 **Deferred to v2:** file uploads, admin dashboard. See
 [Known limitations](#known-limitations--v2) below.
@@ -251,6 +252,7 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 | POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member |
 | GET | `/rooms/{room_id}/messages` | Bearer JWT | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member |
 | POST | `/rooms/{room_id}/messages` | Bearer JWT | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes |
+| PATCH | `/messages/{message_id}` | Bearer JWT | `{"content"}` → 200 `{id, room_id, content, edited_at}`; **author-only, no admin override**; publishes `message.edited` live over WebSocket; 404 if nonexistent/already deleted, 403 if not the author |
 | DELETE | `/messages/{message_id}` | Bearer JWT | 200 `{"status":"deleted"}`; author or room admin only; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted |
 | POST | `/messages/{message_id}/reactions` | Bearer JWT | `{"emoji"}` toggles: 201 `added` / 200 `removed`; publishes `message.reaction` live over WebSocket; 404 if the message is nonexistent or deleted |
 | GET | `/health` | none | `{"postgres":"ok","redis":"ok"}`, 503 if either dependency is down |
@@ -289,6 +291,7 @@ checked against `CORS_ALLOWED_ORIGINS`; clients that send no `Origin` header
 { "type": "user.status_changed", "user_id": "<uuid>", "status": "online", "last_seen_at": "2026-07-05T15:35:00Z" }
 { "type": "message.read_by",     "message_id": "<uuid>", "read_by_user_id": "<uuid>" }
 { "type": "message.reaction",    "message_id": "<uuid>", "user_id": "<uuid>", "emoji": "👍", "action": "added" | "removed" }
+{ "type": "message.edited",      "id": "<uuid>", "room_id": "<uuid>", "content": "edited text", "edited_at": "2026-07-10T15:35:00Z" }
 { "type": "error",               "code": "...", "message": "..." }
 ```
 

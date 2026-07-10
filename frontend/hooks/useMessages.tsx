@@ -9,6 +9,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
+  applyEdit,
   findMessage,
   flattenSortedDedup,
   markDeleted,
@@ -22,7 +23,12 @@ import {
   type MessagesData,
   type MessagesPage,
 } from "@/lib/messagesCache";
-import type { DeleteMessageResponse, MessageWithAuthor, ToggleReactionResponse } from "@/lib/types";
+import type {
+  DeleteMessageResponse,
+  EditMessageResponse,
+  MessageWithAuthor,
+  ToggleReactionResponse,
+} from "@/lib/types";
 
 // ChatMessage moved to lib/messagesCache (shared with the WS provider); re-
 // exported here so existing `@/hooks/useMessages` imports keep working.
@@ -238,6 +244,46 @@ export function useDeleteMessage(roomId: string) {
       toast({
         variant: "destructive",
         title: "Couldn't delete message",
+        description: "Check your connection and try again.",
+      });
+    },
+  });
+}
+
+// Edits a message via PATCH /messages/{id} (backend: author-only, no admin
+// override — see CLAUDE.md). Optimistically applies the new content
+// immediately (client-guessed edited_at) and rolls back to the exact
+// pre-mutation snapshot on failure — unlike a failed send, a rejected edit
+// has no reason to stay visible with a "failed" tag, since the original
+// content is still the true, current message. On success reconciles with the
+// server's own edited_at (clock authority); this also lands on the editor's
+// own client via the live message.edited broadcast bouncing back (this app's
+// deliver-on-receive-only design, see CLAUDE.md), which applyEdit absorbs as
+// a harmless idempotent re-application.
+export function useEditMessage(roomId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, content }: { messageId: string; content: string }) =>
+      api.patch<EditMessageResponse>(`/api/v1/messages/${messageId}`, { content }),
+    onMutate: async ({ messageId, content }) => {
+      const queryKey = messagesQueryKey(roomId);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<MessagesData>(queryKey);
+      queryClient.setQueryData<MessagesData>(queryKey, (old) => applyEdit(old, messageId, content, new Date().toISOString()));
+      return { previous };
+    },
+    onSuccess: (serverMessage) => {
+      queryClient.setQueryData<MessagesData>(messagesQueryKey(roomId), (old) =>
+        applyEdit(old, serverMessage.id, serverMessage.content, serverMessage.edited_at),
+      );
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(messagesQueryKey(roomId), context.previous);
+      }
+      toast({
+        variant: "destructive",
+        title: "Couldn't edit message",
         description: "Check your connection and try again.",
       });
     },
