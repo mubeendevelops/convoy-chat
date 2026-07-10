@@ -150,7 +150,7 @@ func TestSearchUsers(t *testing.T) {
 	})
 
 	t.Run("excludes active members of the given room", func(t *testing.T) {
-		room, err := s.CreateChannel(ctx, aliceID, "general", nil)
+		room, err := s.CreateChannel(ctx, aliceID, "general", nil, true)
 		if err != nil {
 			t.Fatalf("CreateChannel: %v", err)
 		}

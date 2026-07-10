@@ -30,8 +30,12 @@ type Room struct {
 	Description *string   `json:"description,omitempty"`
 	AvatarURL   *string   `json:"avatar_url,omitempty"`
 	IsArchived  bool      `json:"is_archived"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	// IsPublic only has meaning for a channel room: a public channel is
+	// listed by ListPublicChannels and self-joinable via JoinChannel. It's
+	// carried but unused on direct/group rooms.
+	IsPublic  bool      `json:"is_public"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // RoomMember is a raw room_members row.
@@ -50,4 +54,17 @@ type RoomMemberWithUser struct {
 	User     UserSummary `json:"user"`
 	Role     MemberRole  `json:"role"`
 	JoinedAt time.Time   `json:"joined_at"`
+}
+
+// PublicChannel is a public, non-archived channel the caller isn't currently
+// an active member of, with its active member count — the shape served by
+// the browse-channels list (GET /rooms/public). A purpose-built read shape
+// rather than the full Room row, same spirit as MessageReactionSummary.
+type PublicChannel struct {
+	ID          uuid.UUID `json:"id"`
+	Name        *string   `json:"name,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	AvatarURL   *string   `json:"avatar_url,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	MemberCount int       `json:"member_count"`
 }

@@ -15,7 +15,7 @@ import (
 // mustCreateRoom creates a channel with creator as its (only, admin) member.
 func mustCreateRoom(t *testing.T, s *store.Store, creator uuid.UUID) uuid.UUID {
 	t.Helper()
-	room, err := s.CreateChannel(t.Context(), creator, "test-room", nil)
+	room, err := s.CreateChannel(t.Context(), creator, "test-room", nil, true)
 	if err != nil {
 		t.Fatalf("creating fixture room: %v", err)
 	}

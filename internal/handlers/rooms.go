@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -50,6 +51,10 @@ type createRoomRequest struct {
 	Name        string  `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
 	PeerUserID  string  `json:"peer_user_id,omitempty"`
+	// IsPublic only applies to type "channel"; omitted (nil) defaults to
+	// true (public/browsable). An explicit false creates a private,
+	// invite-only channel — the pre-Phase-2 behavior, opted into.
+	IsPublic *bool `json:"is_public,omitempty"`
 }
 
 type roomDetailResponse struct {
@@ -102,7 +107,12 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 				return
 			}
 
-			room, err := s.CreateChannel(r.Context(), userID, name, req.Description)
+			isPublic := true
+			if req.IsPublic != nil {
+				isPublic = *req.IsPublic
+			}
+
+			room, err := s.CreateChannel(r.Context(), userID, name, req.Description, isPublic)
 			if err != nil {
 				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create room")
 				return
@@ -257,6 +267,101 @@ func InviteMember(s *store.Store) http.HandlerFunc {
 			}
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to add member")
 			return
+		}
+
+		httpx.WriteJSON(w, http.StatusCreated, member)
+	}
+}
+
+// ListPublicChannels handles GET /api/v1/rooms/public: public, non-archived
+// channels the caller isn't currently an active member of, with member
+// counts, for the browse-channels UI.
+func ListPublicChannels(s *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+
+		channels, err := s.ListPublicChannels(r.Context(), userID)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list public channels")
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, channels)
+	}
+}
+
+// joinedEvent matches the WS "user.joined" shape from CLAUDE.md:
+// {"type":"user.joined","user":{"id","username"},"room_id"}. Defined here
+// rather than internal/websocket for the same reason reactionEvent is in
+// reactions.go — publishing only needs store.PublishRoomEvent, not the
+// Hub/Broker.
+type joinedEvent struct {
+	Type   string     `json:"type"`
+	User   joinedUser `json:"user"`
+	RoomID uuid.UUID  `json:"room_id"`
+}
+
+type joinedUser struct {
+	ID       uuid.UUID `json:"id"`
+	Username string    `json:"username"`
+}
+
+// JoinChannel handles POST /api/v1/rooms/{room_id}/join: the caller adds
+// *themselves* as a member of a public channel — distinct from the
+// admin-only invite. A room that doesn't exist, isn't a channel, isn't
+// public, or is archived all produce the same 403, mirroring GetRoom's
+// "403 masks nonexistent-vs-forbidden" idiom so probing room IDs can't tell
+// the two apart. Already being an active member is a 409, same as invite.
+func JoinChannel(s *store.Store, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "room_id must be a valid UUID")
+			return
+		}
+
+		room, err := s.GetRoomByID(r.Context(), roomID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.WriteError(w, http.StatusForbidden, "forbidden", "this room isn't a joinable public channel")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to look up room")
+			return
+		}
+		if room.Type != models.RoomTypeChannel || !room.IsPublic || room.IsArchived {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden", "this room isn't a joinable public channel")
+			return
+		}
+
+		member, err := s.AddMember(r.Context(), roomID, userID, models.RoleMember)
+		if err != nil {
+			if errors.Is(err, store.ErrAlreadyMember) {
+				httpx.WriteError(w, http.StatusConflict, "conflict", "you are already a member of this room")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to join room")
+			return
+		}
+
+		// Membership is already committed at this point, so a broadcast
+		// hiccup shouldn't fail the request back to the caller — logged, not
+		// fatal, same philosophy as ToggleReaction's publish step.
+		if joiner, err := s.GetUserByID(r.Context(), userID); err != nil {
+			logger.Error("looking up joining user failed", "user_id", userID, "room_id", roomID, "error", err)
+		} else {
+			payload, err := json.Marshal(joinedEvent{
+				Type:   "user.joined",
+				User:   joinedUser{ID: joiner.ID, Username: joiner.Username},
+				RoomID: roomID,
+			})
+			if err != nil {
+				logger.Error("marshaling user.joined event failed", "room_id", roomID, "error", err)
+			} else if err := s.PublishRoomEvent(r.Context(), roomID, payload); err != nil {
+				logger.Warn("publishing user.joined event failed", "room_id", roomID, "error", err)
+			}
 		}
 
 		httpx.WriteJSON(w, http.StatusCreated, member)

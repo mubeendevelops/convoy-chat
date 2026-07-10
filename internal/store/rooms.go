@@ -12,7 +12,10 @@ import (
 	"github.com/mubeendevelops/convoy-chat/internal/models"
 )
 
-const roomColumns = "id, name, type, creator_id, description, avatar_url, is_archived, created_at, updated_at"
+// is_public is appended rather than interleaved because Postgres always
+// physically appends an ALTER TABLE ... ADD COLUMN to the end of the row
+// (migration 004), regardless of where it's declared in models.Room.
+const roomColumns = "id, name, type, creator_id, description, avatar_url, is_archived, created_at, updated_at, is_public"
 
 // querier is satisfied by both *pgxpool.Pool and pgx.Tx, so helpers below
 // can run either standalone or inside a transaction.
@@ -23,7 +26,7 @@ type querier interface {
 
 func scanRoom(row pgx.Row) (*models.Room, error) {
 	var rm models.Room
-	err := row.Scan(&rm.ID, &rm.Name, &rm.Type, &rm.CreatorID, &rm.Description, &rm.AvatarURL, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt)
+	err := row.Scan(&rm.ID, &rm.Name, &rm.Type, &rm.CreatorID, &rm.Description, &rm.AvatarURL, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt, &rm.IsPublic)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -47,8 +50,11 @@ func insertMember(ctx context.Context, q querier, roomID, userID uuid.UUID, role
 }
 
 // CreateChannel creates a named channel room and adds creatorID as its admin
-// member, atomically.
-func (s *Store) CreateChannel(ctx context.Context, creatorID uuid.UUID, name string, description *string) (*models.Room, error) {
+// member, atomically. isPublic controls whether the channel is browsable and
+// self-joinable via ListPublicChannels/JoinChannel; it has no effect beyond
+// that (membership is still admin-invite-only for a private channel, exactly
+// as before this field existed).
+func (s *Store) CreateChannel(ctx context.Context, creatorID uuid.UUID, name string, description *string, isPublic bool) (*models.Room, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -64,12 +70,12 @@ func (s *Store) CreateChannel(ctx context.Context, creatorID uuid.UUID, name str
 	}
 
 	const insertRoomStmt = `
-		INSERT INTO rooms (id, name, type, creator_id, description)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING is_archived, created_at, updated_at`
+		INSERT INTO rooms (id, name, type, creator_id, description, is_public)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING is_archived, is_public, created_at, updated_at`
 
-	err = tx.QueryRow(ctx, insertRoomStmt, room.ID, room.Name, room.Type, room.CreatorID, room.Description).
-		Scan(&room.IsArchived, &room.CreatedAt, &room.UpdatedAt)
+	err = tx.QueryRow(ctx, insertRoomStmt, room.ID, room.Name, room.Type, room.CreatorID, room.Description, isPublic).
+		Scan(&room.IsArchived, &room.IsPublic, &room.CreatedAt, &room.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("inserting room: %w", err)
 	}
@@ -130,10 +136,10 @@ func (s *Store) GetOrCreateDirectRoom(ctx context.Context, userA, userB uuid.UUI
 	const insertRoomStmt = `
 		INSERT INTO rooms (id, type, creator_id)
 		VALUES ($1, $2, $3)
-		RETURNING is_archived, created_at, updated_at`
+		RETURNING is_archived, is_public, created_at, updated_at`
 
 	err = tx.QueryRow(ctx, insertRoomStmt, newRoom.ID, newRoom.Type, newRoom.CreatorID).
-		Scan(&newRoom.IsArchived, &newRoom.CreatedAt, &newRoom.UpdatedAt)
+		Scan(&newRoom.IsArchived, &newRoom.IsPublic, &newRoom.CreatedAt, &newRoom.UpdatedAt)
 	if err != nil {
 		return nil, false, fmt.Errorf("inserting direct room: %w", err)
 	}
@@ -161,7 +167,7 @@ func (s *Store) GetRoomByID(ctx context.Context, roomID uuid.UUID) (*models.Room
 // most recently joined first.
 func (s *Store) ListRoomsForUser(ctx context.Context, userID uuid.UUID) ([]*models.Room, error) {
 	const q = `
-		SELECT r.id, r.name, r.type, r.creator_id, r.description, r.avatar_url, r.is_archived, r.created_at, r.updated_at
+		SELECT r.id, r.name, r.type, r.creator_id, r.description, r.avatar_url, r.is_archived, r.created_at, r.updated_at, r.is_public
 		FROM rooms r
 		JOIN room_members m ON m.room_id = r.id
 		WHERE m.user_id = $1 AND m.left_at IS NULL
@@ -281,4 +287,42 @@ func (s *Store) RemoveMember(ctx context.Context, roomID, userID uuid.UUID) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ListPublicChannels returns public, non-archived channels excludeUserID is
+// not currently an active member of, each with its active member count,
+// newest first. Backs the browse-channels list (GET /rooms/public).
+func (s *Store) ListPublicChannels(ctx context.Context, excludeUserID uuid.UUID) ([]*models.PublicChannel, error) {
+	const q = `
+		SELECT r.id, r.name, r.description, r.avatar_url, r.created_at,
+		       COUNT(m.id) FILTER (WHERE m.left_at IS NULL) AS member_count
+		FROM rooms r
+		LEFT JOIN room_members m ON m.room_id = r.id
+		WHERE r.type = 'channel' AND r.is_public AND NOT r.is_archived
+		  AND NOT EXISTS (
+		      SELECT 1 FROM room_members me
+		      WHERE me.room_id = r.id AND me.user_id = $1 AND me.left_at IS NULL
+		  )
+		GROUP BY r.id
+		ORDER BY r.created_at DESC`
+
+	rows, err := s.DB.Query(ctx, q, excludeUserID)
+	if err != nil {
+		return nil, fmt.Errorf("querying public channels: %w", err)
+	}
+	defer rows.Close()
+
+	channels := make([]*models.PublicChannel, 0)
+	for rows.Next() {
+		var c models.PublicChannel
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.AvatarURL, &c.CreatedAt, &c.MemberCount); err != nil {
+			return nil, fmt.Errorf("scanning public channel: %w", err)
+		}
+		channels = append(channels, &c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating public channels: %w", err)
+	}
+
+	return channels, nil
 }

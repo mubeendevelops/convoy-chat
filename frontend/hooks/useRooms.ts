@@ -8,6 +8,7 @@ import { isValidUuid } from "@/lib/validation";
 import type {
   CreateRoomRequest,
   LeaveRoomResponse,
+  PublicChannel,
   Room,
   RoomDetail,
   RoomMember,
@@ -63,6 +64,34 @@ export function useLeaveRoom() {
         title: "Couldn't leave the room",
         description: "Check your connection and try again.",
       });
+    },
+  });
+}
+
+// Public, non-archived channels the caller isn't a member of yet, backed by
+// GET /rooms/public. A plain list, no debounced search — fine at v1 scale,
+// same call already made for RoomsList's direct-room N+1 lookups.
+export function useBrowseChannels(enabled: boolean) {
+  return useQuery({
+    queryKey: ["rooms", "public"],
+    queryFn: () => api.get<PublicChannel[]>("/api/v1/rooms/public"),
+    enabled,
+  });
+}
+
+// Self-joins a public channel via POST /rooms/{id}/join (backend enforces
+// is_public — a private or nonexistent room 403s, an already-active member
+// 409s). On success both the caller's own room list and the browse list are
+// invalidated (the joined channel drops out of one, appears in the other);
+// the joiner's own client has no live signal of its own join (user.joined
+// only reaches already-open rooms), so cache invalidation is the only way
+// their sidebar picks it up. The caller navigates into the room afterward.
+export function useJoinChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (roomId: string) => api.post<RoomMember>(`/api/v1/rooms/${roomId}/join`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rooms"] });
     },
   });
 }

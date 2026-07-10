@@ -29,7 +29,7 @@ func TestCreateChannel(t *testing.T) {
 	creator := mustCreateUser(t, s, "creator")
 
 	desc := "a test channel"
-	room, err := s.CreateChannel(ctx, creator, "general", &desc)
+	room, err := s.CreateChannel(ctx, creator, "general", &desc, true)
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestAddMember_RemoveMember_Reactivation(t *testing.T) {
 	creator := mustCreateUser(t, s, "creator")
 	member := mustCreateUser(t, s, "member")
 
-	room, err := s.CreateChannel(ctx, creator, "team", nil)
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestListMembers_And_ListRoomsForUser(t *testing.T) {
 	memberA := mustCreateUser(t, s, "member_a")
 	outsider := mustCreateUser(t, s, "outsider")
 
-	room, err := s.CreateChannel(ctx, creator, "team", nil)
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
@@ -248,4 +248,84 @@ func TestListMembers_And_ListRoomsForUser(t *testing.T) {
 	if len(outsiderRooms) != 0 {
 		t.Errorf("got %d rooms for an outsider, want 0", len(outsiderRooms))
 	}
+}
+
+func TestListPublicChannels(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	member := mustCreateUser(t, s, "member")
+	browser := mustCreateUser(t, s, "browser")
+
+	publicRoom, err := s.CreateChannel(ctx, creator, "general", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel(public): %v", err)
+	}
+	if _, err := s.AddMember(ctx, publicRoom.ID, member, models.RoleMember); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	privateRoom, err := s.CreateChannel(ctx, creator, "secret", nil, false)
+	if err != nil {
+		t.Fatalf("CreateChannel(private): %v", err)
+	}
+
+	if _, _, err := s.GetOrCreateDirectRoom(ctx, creator, browser); err != nil {
+		t.Fatalf("GetOrCreateDirectRoom: %v", err)
+	}
+
+	t.Run("lists public channels with member counts, excluding private and direct rooms", func(t *testing.T) {
+		channels, err := s.ListPublicChannels(ctx, browser)
+		if err != nil {
+			t.Fatalf("ListPublicChannels: %v", err)
+		}
+		if len(channels) != 1 {
+			t.Fatalf("got %d channels, want 1: %+v", len(channels), channels)
+		}
+		if channels[0].ID != publicRoom.ID {
+			t.Errorf("got room %s, want %s", channels[0].ID, publicRoom.ID)
+		}
+		if channels[0].MemberCount != 2 {
+			t.Errorf("got member_count %d, want 2 (creator + member)", channels[0].MemberCount)
+		}
+		for _, c := range channels {
+			if c.ID == privateRoom.ID {
+				t.Error("private channel must not appear in the public list")
+			}
+		}
+	})
+
+	t.Run("excludes channels the caller already belongs to", func(t *testing.T) {
+		channels, err := s.ListPublicChannels(ctx, creator)
+		if err != nil {
+			t.Fatalf("ListPublicChannels: %v", err)
+		}
+		for _, c := range channels {
+			if c.ID == publicRoom.ID {
+				t.Error("a channel the caller already belongs to must not appear")
+			}
+		}
+	})
+
+	t.Run("a departed member sees the channel again", func(t *testing.T) {
+		if err := s.RemoveMember(ctx, publicRoom.ID, member); err != nil {
+			t.Fatalf("RemoveMember: %v", err)
+		}
+		channels, err := s.ListPublicChannels(ctx, member)
+		if err != nil {
+			t.Fatalf("ListPublicChannels: %v", err)
+		}
+		found := false
+		for _, c := range channels {
+			if c.ID == publicRoom.ID {
+				found = true
+				if c.MemberCount != 1 {
+					t.Errorf("got member_count %d after leaving, want 1 (creator only)", c.MemberCount)
+				}
+			}
+		}
+		if !found {
+			t.Error("expected the departed member to see the channel again in the public list")
+		}
+	})
 }

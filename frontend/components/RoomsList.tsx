@@ -4,6 +4,7 @@ import { memo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
+import { BrowseChannelsDialog } from "@/components/BrowseChannelsDialog";
 import { CreateRoomDialog } from "@/components/CreateRoomDialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,7 +56,10 @@ export function RoomsList() {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <CreateRoomDialog />
+      <div className="space-y-2">
+        <CreateRoomDialog />
+        <BrowseChannelsDialog />
+      </div>
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 pr-2">

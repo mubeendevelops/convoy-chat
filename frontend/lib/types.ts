@@ -40,8 +40,23 @@ export interface Room {
   description?: string;
   avatar_url?: string;
   is_archived: boolean;
+  // Only meaningful for type "channel" — a public channel is listed by
+  // GET /rooms/public and self-joinable via POST .../join.
+  is_public: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// GET /rooms/public row: a public, non-archived channel the caller isn't a
+// member of yet, with its active member count — a purpose-built shape, not
+// the full Room.
+export interface PublicChannel {
+  id: string;
+  name?: string;
+  description?: string;
+  avatar_url?: string;
+  created_at: string;
+  member_count: number;
 }
 
 // Raw room_members row, e.g. the POST .../invite response.
@@ -121,7 +136,7 @@ export interface LoginRequest {
 // POST /rooms discriminates on `type`; the backend rejects any other value
 // (e.g. "group" is schema-supported but not creatable in v1).
 export type CreateRoomRequest =
-  | { type: "channel"; name: string; description?: string }
+  | { type: "channel"; name: string; description?: string; is_public?: boolean }
   | { type: "direct"; peer_user_id: string };
 
 export interface InviteMemberRequest {
