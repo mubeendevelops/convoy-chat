@@ -252,6 +252,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     if (!hasHydrated) return; // wait for the localStorage session read
     if (!token) {
       setStatus("closed");
+      // Reset presence on logout so a stale "away" (or another user's cached
+      // status) can't leak into the next session, which would otherwise get
+      // re-asserted on that session's first connect.
+      usePresenceStore.getState().clear();
       return; // logged out: no socket
     }
 
@@ -288,6 +292,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           ws.send(JSON.stringify({ type: "room.join", room_id: roomId } satisfies ClientEvent));
           if (isReconnect) void resyncRoom(roomId);
         });
+        // Re-assert the user's chosen presence. The backend resets status to
+        // "online" on every fresh 0→1 connect (internal/store/presence.go's
+        // PresenceConnect) and deletes it on disconnect, so an "away" the user
+        // picked would otherwise be silently lost on any reconnect. Guarded so
+        // the default "online" costs nothing; also covers an "away" chosen
+        // before this first open completed (the emit then no-op'd, socket down).
+        const selfStatus = usePresenceStore.getState().selfStatus;
+        if (selfStatus !== "online") {
+          ws.send(JSON.stringify({ type: "presence.update", status: selfStatus } satisfies ClientEvent));
+        }
       };
 
       ws.onmessage = (e) => {

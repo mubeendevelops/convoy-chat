@@ -4,14 +4,16 @@ import type { PresenceStatus } from "@/lib/types";
 
 // online reuses the brand cyan token (reserved for online indicators per
 // CLAUDE.md's locked palette); away/offline are plain neutral Tailwind
-// colors since only online gets the brand reservation.
-const STATUS_COLOR: Record<PresenceStatus, string> = {
+// colors since only online gets the brand reservation. Exported so the
+// self-presence control renders identical dots/labels (one source of truth
+// for the three states, everywhere presence is shown).
+export const STATUS_COLOR: Record<PresenceStatus, string> = {
   online: "bg-primary",
   away: "bg-amber-500",
   offline: "bg-muted-foreground/40",
 };
 
-const STATUS_LABEL: Record<PresenceStatus, string> = {
+export const STATUS_LABEL: Record<PresenceStatus, string> = {
   online: "Online",
   away: "Away",
   offline: "Offline",
