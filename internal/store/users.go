@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
@@ -74,4 +75,53 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*models.User,
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
 	row := s.DB.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE username = $1`, username)
 	return scanUser(row)
+}
+
+// likeEscaper neutralizes LIKE/ILIKE metacharacters so a caller-supplied
+// search term is matched literally. Usernames may contain `_` (see the
+// username regex in CLAUDE.md), which is a LIKE wildcard, so without this a
+// search for "a_b" would also match "axb". `\` is Postgres's default LIKE
+// escape character, so escaping to `\_`/`\%`/`\\` needs no explicit ESCAPE
+// clause.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// SearchUsers returns up to limit users whose username starts with query
+// (case-insensitive prefix), excluding excludeUserID (the caller — you can't
+// invite yourself). When excludeRoomID is non-nil, users who are already
+// active members of that room are excluded too, so an invite picker only
+// surfaces people it can actually add. Returns UserSummary (never email or
+// password_hash). query is assumed already trimmed and non-empty.
+func (s *Store) SearchUsers(ctx context.Context, query string, excludeUserID uuid.UUID, excludeRoomID *uuid.UUID, limit int) ([]models.UserSummary, error) {
+	const q = `
+		SELECT u.id, u.username, u.avatar_url
+		FROM users u
+		WHERE u.username ILIKE $1
+		  AND u.id <> $2
+		  AND ($3::uuid IS NULL OR NOT EXISTS (
+			SELECT 1 FROM room_members m
+			WHERE m.room_id = $3::uuid AND m.user_id = u.id AND m.left_at IS NULL))
+		ORDER BY u.username ASC
+		LIMIT $4`
+
+	pattern := likeEscaper.Replace(query) + "%"
+
+	rows, err := s.DB.Query(ctx, q, pattern, excludeUserID, excludeRoomID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching users: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]models.UserSummary, 0)
+	for rows.Next() {
+		var u models.UserSummary
+		if err := rows.Scan(&u.ID, &u.Username, &u.AvatarURL); err != nil {
+			return nil, fmt.Errorf("scanning user summary: %w", err)
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating user search: %w", err)
+	}
+
+	return users, nil
 }

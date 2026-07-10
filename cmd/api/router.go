@@ -52,6 +52,7 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware(cfg.JWTSecret))
+			r.Get("/users/search", handlers.SearchUsers(st))
 			r.Get("/users/{user_id}", handlers.GetUser(st))
 
 			r.Post("/rooms", handlers.CreateRoom(st))
