@@ -10,8 +10,9 @@ history, editing, and deletion · presence (online/away/offline) · typing
 indicators · read receipts · emoji reactions · multi-server broadcast via
 Redis Pub/Sub.
 
-**Deferred to v2:** file uploads, admin dashboard. See
-[Known limitations](#known-limitations--v2) below.
+**Deferred to v2:** admin dashboard. See
+[Known limitations](#known-limitations--v2) below. (File uploads was considered
+and decided against — this stays a pure text/reaction/read-receipt chat app.)
 
 ## Architecture
 
@@ -339,7 +340,11 @@ backups, rate limiting, graceful shutdown).
 
 ## Known limitations / v2
 
-- No file uploads or admin dashboard (schema/auth partly ready; not built).
+- No admin dashboard (auth partly ready; not built). File uploads was
+  considered and decided against, not merely deferred — ConvoyChat stays a
+  pure text/reaction/read-receipt chat app; the schema's readiness for it
+  (`message_type` `image`/`file`, `messages.metadata` JSONB) is left in place
+  but unused, same as the unused `group` room type.
 - No promote/demote/kick, and no admin-succession if the last admin leaves a
   channel — a room can end up with no admin. A DM has no admin by design (a
   1:1 conversation has no owner).
