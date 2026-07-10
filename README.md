@@ -1,17 +1,18 @@
 # ConvoyChat
 
-A production-grade, Slack-like real-time chat application: a Go API serving
-REST + WebSocket, a Next.js 14 frontend, PostgreSQL for persistence, and
-Redis for presence state and cross-server Pub/Sub broadcast.
+A Slack-style real-time chat application: a Go API serving REST + WebSocket,
+a Next.js 14 frontend, PostgreSQL for persistence, and Redis for presence
+state and cross-server Pub/Sub broadcast.
 
 **Features:** JWT auth with refresh-token rotation · channels, groups, and
-direct messages · room/member management with admin/member roles
+direct messages · room & membership management — invite by username search,
+browse and self-join public channels, leave, and admin/member roles
 (promote/demote, kick, admin succession) · a system-admin dashboard
 (system-wide room/presence visibility + message moderation, a separate
 authority from per-room admin) · real-time messaging with persistence and
-history, editing, and deletion · presence (online/away/offline) · typing
-indicators · read receipts · emoji reactions · multi-server broadcast via
-Redis Pub/Sub.
+history, editing, and deletion · presence (online/away/offline, with a
+manual away toggle) · typing indicators · read receipts · emoji reactions ·
+multi-server broadcast via Redis Pub/Sub.
 
 File uploads was considered and decided against — this stays a pure
 text/reaction/read-receipt chat app. See
@@ -260,12 +261,15 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 | POST | `/auth/login` | none | 200 `{token, refresh_token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration) |
 | POST | `/auth/refresh` | refresh token (body), no Bearer | `{refresh_token}` → 200 `{token, refresh_token, user}`; rotates (old token revoked, new one issued in the same session family); 401 on a bogus/expired/already-rotated-out token — replaying an already-rotated-out token also revokes every other token in its family |
 | POST | `/auth/logout` | Bearer JWT | `{refresh_token}` → 200 `{"status":"logged_out"}`; revokes the presented token's whole session family; a missing/unknown/already-revoked token is a no-op 200, not an error |
+| GET | `/users/search` | Bearer JWT | `?q=<username-prefix>&room_id=<uuid>` → up to 20 users by case-insensitive username prefix; excludes you and (when `room_id` is given) that room's active members. Backs the invite and group-creation pickers |
 | GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
 | POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair); `{"type":"group","name","description","member_ids":[...]}` → 201, ≥2 `member_ids` required, always private |
 | GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
+| GET | `/rooms/public` | Bearer JWT | public, non-archived channels you're not already in, each with a `member_count`; backs the "browse channels" list |
 | GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member and not a system admin (also covers a nonexistent room, so room IDs can't be enumerated) |
 | GET | `/rooms/{room_id}/members` | Bearer JWT | same 403 rule as above |
 | POST | `/rooms/{room_id}/invite` | Bearer JWT, admin only | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member |
+| POST | `/rooms/{room_id}/join` | Bearer JWT | self-join a public channel → 201 membership; 403 if the room is missing/private/not a channel (so IDs can't be probed), 409 if already a member; publishes `user.joined` live |
 | POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member; publishes `user.left` live and runs admin succession if the leaver was the room's last admin |
 | PATCH | `/rooms/{room_id}/members/{user_id}/role` | Bearer JWT, admin only | `{"role":"admin"\|"member"}` → 200; idempotent; publishes `member.role_changed` live; 404 non-member target, 409 demoting the room's last admin |
 | DELETE | `/rooms/{room_id}/members/{user_id}` | Bearer JWT, admin only | 200 `{"status":"removed"}` — kicks the target; publishes `user.left` live; 400 on self-removal (use `.../leave`), 404 non-member target |
