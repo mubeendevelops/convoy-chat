@@ -22,6 +22,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { InviteMemberDialog } from "@/components/InviteMemberDialog";
 import { MembersList } from "@/components/MembersList";
 import { MobileSidebarTrigger } from "@/components/MobileSidebarTrigger";
 import { useLeaveRoom } from "@/hooks/useRooms";
@@ -38,6 +39,12 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
   // action accordingly, but the backend membership-leave is the same call.
   const isDirect = room.type === "direct";
   const leaveLabel = isDirect ? "Leave conversation" : "Leave room";
+
+  // The invite endpoint is admin-only and DMs have no admin, so the picker
+  // shows only for a channel where the current user is an admin — matching
+  // exactly who the backend would let invite.
+  const canInvite =
+    room.type === "channel" && room.members.some((m) => m.user.id === currentUserId && m.role === "admin");
 
   async function handleLeave() {
     try {
@@ -60,6 +67,8 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
+        {canInvite && <InviteMemberDialog roomId={room.id} roomName={displayName} />}
+
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="ghost" size="sm" className="gap-2">

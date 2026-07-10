@@ -5,7 +5,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { isValidUuid } from "@/lib/validation";
-import type { CreateRoomRequest, LeaveRoomResponse, Room, RoomDetail, User } from "@/lib/types";
+import type {
+  CreateRoomRequest,
+  LeaveRoomResponse,
+  Room,
+  RoomDetail,
+  RoomMember,
+  User,
+  UserSummary,
+} from "@/lib/types";
 
 export function useRooms() {
   return useQuery({
@@ -55,6 +63,46 @@ export function useLeaveRoom() {
         title: "Couldn't leave the room",
         description: "Check your connection and try again.",
       });
+    },
+  });
+}
+
+// Username-prefix search for the invite picker, backed by GET
+// /users/search. `query` is expected already-debounced by the caller (this is
+// a plain query hook, like useLookupUser) — the queryKey includes it so each
+// distinct debounced value is its own cache entry. Disabled on an empty query
+// so clearing the box doesn't fire a request. `roomId` scopes the search so the
+// backend omits people already in the room; it's part of the key so results
+// don't bleed between rooms. A short staleTime avoids refetching while the user
+// backspaces over previously-typed prefixes.
+export function useSearchUsers(query: string, roomId?: string) {
+  const trimmed = query.trim();
+  return useQuery({
+    queryKey: ["user-search", trimmed, roomId ?? null],
+    queryFn: () =>
+      api.get<UserSummary[]>(
+        `/api/v1/users/search?q=${encodeURIComponent(trimmed)}` +
+          (roomId ? `&room_id=${encodeURIComponent(roomId)}` : ""),
+      ),
+    enabled: trimmed.length > 0,
+    staleTime: 30_000,
+  });
+}
+
+// Invites a user into a room via POST /rooms/{id}/invite (admin-only,
+// enforced server-side; the picker is only shown to admins). On success both
+// the room detail (so the members list reflects the new member live for the
+// inviter) and any cached user-search results (so the freshly-added user drops
+// out of the picker) are invalidated. Errors are surfaced by the caller via
+// the returned mutation so it can show them inline next to the picker.
+export function useInviteMember(roomId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) =>
+      api.post<RoomMember>(`/api/v1/rooms/${roomId}/invite`, { user_id: userId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["room", roomId] });
+      queryClient.invalidateQueries({ queryKey: ["user-search"] });
     },
   });
 }
