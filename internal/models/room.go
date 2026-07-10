@@ -56,6 +56,21 @@ type RoomMemberWithUser struct {
 	JoinedAt time.Time   `json:"joined_at"`
 }
 
+// AdminRoomSummary is the system-admin-only "every room" listing shape
+// (GET /admin/rooms) — unlike PublicChannel (which only ever surfaces public
+// channels to non-members), this includes every room type and visibility,
+// since only a system admin can reach it. A purpose-built read shape, not
+// the full Room row.
+type AdminRoomSummary struct {
+	ID          uuid.UUID   `json:"id"`
+	Name        *string     `json:"name,omitempty"`
+	Type        RoomType    `json:"type"`
+	Creator     UserSummary `json:"creator"`
+	MemberCount int         `json:"member_count"`
+	IsArchived  bool        `json:"is_archived"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
 // PublicChannel is a public, non-archived channel the caller isn't currently
 // an active member of, with its active member count — the shape served by
 // the browse-channels list (GET /rooms/public). A purpose-built read shape

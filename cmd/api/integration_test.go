@@ -13,6 +13,7 @@ import (
 	gws "github.com/gorilla/websocket"
 
 	"github.com/mubeendevelops/convoy-chat/internal/config"
+	"github.com/mubeendevelops/convoy-chat/internal/store"
 	"github.com/mubeendevelops/convoy-chat/internal/testutil"
 	"github.com/mubeendevelops/convoy-chat/internal/websocket"
 )
@@ -24,6 +25,16 @@ const wsReadTimeout = 5 * time.Second
 // via httptest — so this test drives the actual production wiring end to
 // end, not a stand-in.
 func newTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv, _ := newTestServerWithStore(t)
+	return srv
+}
+
+// newTestServerWithStore is newTestServer plus direct access to the
+// underlying *store.Store — needed by tests that must reach a store method
+// with no REST equivalent (e.g. PromoteToSystemAdmin, deliberately
+// endpoint-less — see plan.md's admin-dashboard proposal).
+func newTestServerWithStore(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st := testutil.NewStore(t)
 
@@ -43,7 +54,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 	srv := httptest.NewServer(newRouter(cfg, st, wsServer, logger))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, st
 }
 
 type testUser struct {

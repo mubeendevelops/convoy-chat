@@ -65,3 +65,33 @@ func MembershipFromContext(ctx context.Context) (*models.RoomMember, bool) {
 	m, ok := ctx.Value(membershipContextKey{}).(*models.RoomMember)
 	return m, ok
 }
+
+// RequireSystemAdmin is chi middleware gating a route on the caller being a
+// system admin (users.is_system_admin) — a wholly different, wider authority
+// than RequireRoomAdmin's per-room check above: a system admin's power is
+// visibility into every room/user plus delete-any-message, deliberately
+// *not* membership management (invite/kick/promote) in rooms they don't
+// belong to (see plan.md's admin-dashboard proposal for the full scope
+// boundary). Used for the two admin-only listing endpoints; the three
+// widened existing endpoints (room detail/members, message delete) check
+// IsSystemAdmin inline instead, since they need to fall through to their
+// existing membership/author checks first, not gate the whole route on it.
+func RequireSystemAdmin(s *store.Store) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID, _ := auth.UserIDFromContext(r.Context())
+
+			user, err := s.GetUserByID(r.Context(), userID)
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check admin status")
+				return
+			}
+			if !user.IsSystemAdmin {
+				httpx.WriteError(w, http.StatusForbidden, "forbidden", "system admin access required")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}

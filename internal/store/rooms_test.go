@@ -402,6 +402,70 @@ func TestPromoteOldestIfNoAdmins(t *testing.T) {
 	})
 }
 
+func TestListAllRooms(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	alice := mustCreateUser(t, s, "admin_view_alice")
+	bob := mustCreateUser(t, s, "admin_view_bob")
+	outsider := mustCreateUser(t, s, "admin_view_outsider")
+
+	channel, err := s.CreateChannel(ctx, alice, "team-channel", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, err := s.AddMember(ctx, channel.ID, bob, models.RoleMember); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	dm, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	if err != nil {
+		t.Fatalf("GetOrCreateDirectRoom: %v", err)
+	}
+
+	// outsider belongs to neither room — ListAllRooms must still return both,
+	// unlike ListRoomsForUser, which is scoped to the caller's own membership.
+	rooms, err := s.ListAllRooms(ctx, 50, 0)
+	if err != nil {
+		t.Fatalf("ListAllRooms: %v", err)
+	}
+
+	byID := make(map[uuid.UUID]models.AdminRoomSummary, len(rooms))
+	for _, r := range rooms {
+		byID[r.ID] = r
+	}
+	if _, ok := byID[channel.ID]; !ok {
+		t.Error("expected the channel to appear in ListAllRooms")
+	}
+	if _, ok := byID[dm.ID]; !ok {
+		t.Error("expected the direct room to appear in ListAllRooms")
+	}
+	if got := byID[channel.ID].MemberCount; got != 2 {
+		t.Errorf("got channel member_count %d, want 2 (alice + bob)", got)
+	}
+	if got := byID[channel.ID].Creator.ID; got != alice {
+		t.Errorf("got creator %s, want %s", got, alice)
+	}
+
+	t.Run("outsider's own membership doesn't affect the listing", func(t *testing.T) {
+		rooms, err := s.ListRoomsForUser(ctx, outsider)
+		if err != nil {
+			t.Fatalf("ListRoomsForUser: %v", err)
+		}
+		if len(rooms) != 0 {
+			t.Fatalf("sanity check failed: outsider unexpectedly belongs to %d rooms", len(rooms))
+		}
+	})
+
+	t.Run("limit is respected", func(t *testing.T) {
+		limited, err := s.ListAllRooms(ctx, 1, 0)
+		if err != nil {
+			t.Fatalf("ListAllRooms: %v", err)
+		}
+		if len(limited) != 1 {
+			t.Errorf("got %d rooms, want 1", len(limited))
+		}
+	})
+}
+
 func TestListMembers_And_ListRoomsForUser(t *testing.T) {
 	s := testutil.NewStore(t)
 	ctx := t.Context()

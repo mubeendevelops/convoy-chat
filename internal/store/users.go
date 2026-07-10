@@ -14,11 +14,15 @@ import (
 	"github.com/mubeendevelops/convoy-chat/internal/models"
 )
 
-const userColumns = "id, username, email, password_hash, avatar_url, bio, created_at, updated_at"
+// is_system_admin is appended rather than interleaved, same reasoning as
+// rooms.go's roomColumns comment: Postgres always physically appends an
+// ALTER TABLE ... ADD COLUMN (migration 007) regardless of where it's
+// declared in models.User.
+const userColumns = "id, username, email, password_hash, avatar_url, bio, created_at, updated_at, is_system_admin"
 
 func scanUser(row pgx.Row) (*models.User, error) {
 	var u models.User
-	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarURL, &u.Bio, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarURL, &u.Bio, &u.CreatedAt, &u.UpdatedAt, &u.IsSystemAdmin)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -74,6 +78,25 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*models.User,
 
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
 	row := s.DB.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE username = $1`, username)
+	return scanUser(row)
+}
+
+// PromoteToSystemAdmin grants system-admin status to the user with the given
+// email (trimmed, lowercased — matching every other email lookup in this
+// package). Used only by the `-promote-admin` CLI bootstrap mode (see
+// cmd/api/promote.go) — no REST endpoint exists for this, by design (see
+// plan.md's admin-dashboard proposal): granting the *first* system admin
+// can't go through an admin-gated endpoint (nobody is one yet), and who else
+// becomes one afterward is treated as an infrequent, high-stakes ops
+// decision rather than an in-app action.
+func (s *Store) PromoteToSystemAdmin(ctx context.Context, email string) (*models.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	const q = `
+		UPDATE users SET is_system_admin = true
+		WHERE email = $1
+		RETURNING ` + userColumns
+
+	row := s.DB.QueryRow(ctx, q, email)
 	return scanUser(row)
 }
 

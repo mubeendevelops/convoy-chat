@@ -189,6 +189,44 @@ func TestPresenceHeartbeat_RefreshesTTL(t *testing.T) {
 	}
 }
 
+func TestListAllUserPresence(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	online := mustCreateUser(t, s, "presence_list_online")
+	offline := mustCreateUser(t, s, "presence_list_offline")
+
+	if _, err := s.PresenceConnect(ctx, online, time.Minute); err != nil {
+		t.Fatalf("PresenceConnect: %v", err)
+	}
+	// offline never connects — must still appear, defaulted to offline.
+
+	entries, err := s.ListAllUserPresence(ctx)
+	if err != nil {
+		t.Fatalf("ListAllUserPresence: %v", err)
+	}
+
+	byID := make(map[uuid.UUID]models.AdminPresenceEntry, len(entries))
+	for _, e := range entries {
+		byID[e.UserID] = e
+	}
+
+	onlineEntry, ok := byID[online]
+	if !ok {
+		t.Fatal("expected the connected user to appear in the snapshot")
+	}
+	if onlineEntry.Status != models.PresenceOnline {
+		t.Errorf("got status %q for the connected user, want %q", onlineEntry.Status, models.PresenceOnline)
+	}
+
+	offlineEntry, ok := byID[offline]
+	if !ok {
+		t.Fatal("expected the never-connected user to appear in the snapshot")
+	}
+	if offlineEntry.Status != models.PresenceOffline {
+		t.Errorf("got status %q for a user with no live Redis entry, want %q (default)", offlineEntry.Status, models.PresenceOffline)
+	}
+}
+
 func TestPresenceHeartbeat_ResurrectsLapsedKey(t *testing.T) {
 	s := testutil.NewStore(t)
 	ctx := t.Context()

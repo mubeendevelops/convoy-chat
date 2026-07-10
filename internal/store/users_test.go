@@ -90,6 +90,51 @@ func TestCreateUser_DuplicateEmail(t *testing.T) {
 	}
 }
 
+func TestPromoteToSystemAdmin(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+
+	// store.CreateUser doesn't normalize email casing itself — that happens
+	// at the handler layer (see CLAUDE.md) — so the fixture stores it
+	// already-lowercased, same as every other test in this file, and
+	// PromoteToSystemAdmin's own normalization is exercised via the mixed-
+	// case + whitespace input below instead.
+	user, err := s.CreateUser(ctx, "dave", "dave@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if user.IsSystemAdmin {
+		t.Fatal("a freshly-created user must not start as a system admin")
+	}
+
+	t.Run("promotes by email, case-insensitive", func(t *testing.T) {
+		promoted, err := s.PromoteToSystemAdmin(ctx, "  DAVE@example.com  ")
+		if err != nil {
+			t.Fatalf("PromoteToSystemAdmin: %v", err)
+		}
+		if promoted.ID != user.ID {
+			t.Errorf("got user %s, want %s", promoted.ID, user.ID)
+		}
+		if !promoted.IsSystemAdmin {
+			t.Error("expected IsSystemAdmin=true on the returned user")
+		}
+
+		got, err := s.GetUserByID(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("GetUserByID: %v", err)
+		}
+		if !got.IsSystemAdmin {
+			t.Error("expected the promotion to persist")
+		}
+	})
+
+	t.Run("unknown email is ErrNotFound", func(t *testing.T) {
+		if _, err := s.PromoteToSystemAdmin(ctx, "nobody@example.com"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("got error %v, want ErrNotFound", err)
+		}
+	})
+}
+
 func usernamesOf(users []models.UserSummary) []string {
 	names := make([]string, len(users))
 	for i, u := range users {

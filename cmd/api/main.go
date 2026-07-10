@@ -30,6 +30,7 @@ func main() {
 
 func run() int {
 	migrateOnly := flag.Bool("migrate", false, "apply pending database migrations, then exit (no server)")
+	promoteAdminEmail := flag.String("promote-admin", "", "grant system-admin status to the user with this email, then exit (no server)")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -42,6 +43,9 @@ func run() int {
 
 	if *migrateOnly {
 		return runMigrations(cfg, logger)
+	}
+	if *promoteAdminEmail != "" {
+		return runPromoteAdmin(cfg, logger, *promoteAdminEmail)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

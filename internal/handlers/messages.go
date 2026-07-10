@@ -207,9 +207,22 @@ func DeleteMessage(s *store.Store) http.HandlerFunc {
 				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check membership")
 				return
 			}
-			if err != nil || membership.Role != models.RoleAdmin {
-				httpx.WriteError(w, http.StatusForbidden, "forbidden", "only the author or a room admin can delete this message")
-				return
+			isRoomAdmin := err == nil && membership.Role == models.RoleAdmin
+
+			// A system admin can moderate any message in any room, including
+			// ones they don't belong to — this is "message moderation" (see
+			// plan.md's admin-dashboard proposal); it widens who may call this
+			// existing endpoint rather than adding a separate one.
+			if !isRoomAdmin {
+				caller, err := s.GetUserByID(r.Context(), userID)
+				if err != nil {
+					httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check admin status")
+					return
+				}
+				if !caller.IsSystemAdmin {
+					httpx.WriteError(w, http.StatusForbidden, "forbidden", "only the author, a room admin, or a system admin can delete this message")
+					return
+				}
 			}
 		}
 

@@ -253,6 +253,49 @@ func (s *Store) PromoteOldestIfNoAdmins(ctx context.Context, roomID uuid.UUID) (
 	return &m, nil
 }
 
+// ListAllRooms returns every room in the system, regardless of the caller's
+// own membership, newest first — for the system-admin dashboard
+// (GET /admin/rooms). Plain offset pagination, not keyset: a deliberate
+// deviation from the message-history precedent, since this is a low-traffic,
+// human-paged admin screen rather than a live-scrolling feed (see plan.md's
+// admin-dashboard proposal).
+func (s *Store) ListAllRooms(ctx context.Context, limit, offset int) ([]models.AdminRoomSummary, error) {
+	const q = `
+		SELECT r.id, r.name, r.type, r.is_archived, r.created_at,
+		       u.id, u.username, u.avatar_url,
+		       COUNT(m.id) FILTER (WHERE m.left_at IS NULL) AS member_count
+		FROM rooms r
+		JOIN users u ON u.id = r.creator_id
+		LEFT JOIN room_members m ON m.room_id = r.id
+		GROUP BY r.id, u.id
+		ORDER BY r.created_at DESC
+		LIMIT $1 OFFSET $2`
+
+	rows, err := s.DB.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("querying all rooms: %w", err)
+	}
+	defer rows.Close()
+
+	rooms := make([]models.AdminRoomSummary, 0)
+	for rows.Next() {
+		var rm models.AdminRoomSummary
+		err := rows.Scan(
+			&rm.ID, &rm.Name, &rm.Type, &rm.IsArchived, &rm.CreatedAt,
+			&rm.Creator.ID, &rm.Creator.Username, &rm.Creator.AvatarURL, &rm.MemberCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scanning admin room summary: %w", err)
+		}
+		rooms = append(rooms, rm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating all rooms: %w", err)
+	}
+
+	return rooms, nil
+}
+
 // GetOrCreateDirectRoom returns the existing direct room between userA and
 // userB, or creates one if none exists yet. created is true only when a new
 // room was inserted. A Postgres advisory lock keyed on the sorted user pair

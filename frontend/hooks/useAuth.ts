@@ -88,3 +88,23 @@ export function useRequireGuest() {
 
   return { isReady: isHydrated && !isAuthenticated, isHydrated };
 }
+
+// For the admin dashboard (/admin, Phase 3 post-v1). Redirects to /chat once
+// hydration has confirmed the caller either isn't logged in or isn't a
+// system admin — client-side UX only, same "server is the real gate"
+// philosophy as every other route guard here; every /admin/* endpoint is
+// independently enforced by RequireSystemAdmin regardless of what this hook
+// does.
+export function useRequireSystemAdmin() {
+  const { user, isAuthenticated, isHydrated } = useAuth();
+  const router = useRouter();
+  const isSystemAdmin = !!user?.is_system_admin;
+
+  useEffect(() => {
+    if (isHydrated && (!isAuthenticated || !isSystemAdmin)) {
+      router.replace("/chat");
+    }
+  }, [isHydrated, isAuthenticated, isSystemAdmin, router]);
+
+  return { isReady: isHydrated && isAuthenticated && isSystemAdmin, isHydrated };
+}

@@ -127,3 +127,60 @@ func (s *Store) upsertUserPresence(ctx context.Context, userID uuid.UUID, status
 	}
 	return nil
 }
+
+// ListAllUserPresence returns a system-wide snapshot: every registered user
+// with their current presence status, defaulting to "offline" for anyone
+// with no live Redis entry (same "no live signal yet = offline" default
+// already used by the frontend's usePresence.ts, just computed server-side
+// and system-wide instead of per-room) — for the system-admin dashboard
+// (GET /admin/presence). One Redis MGET across every user's status key, not
+// N round trips. O(all users), no pagination — a known, flagged non-scaling
+// shortcut (see plan.md's admin-dashboard proposal), fine at this app's
+// scale, same spirit as RoomsList's N+1 direct-room lookups.
+func (s *Store) ListAllUserPresence(ctx context.Context) ([]models.AdminPresenceEntry, error) {
+	const q = `
+		SELECT u.id, u.username, up.last_seen_at
+		FROM users u
+		LEFT JOIN user_presence up ON up.user_id = u.id
+		ORDER BY u.username ASC`
+
+	rows, err := s.DB.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("querying users for presence snapshot: %w", err)
+	}
+
+	entries := make([]models.AdminPresenceEntry, 0)
+	keys := make([]string, 0)
+	for rows.Next() {
+		var e models.AdminPresenceEntry
+		if err := rows.Scan(&e.UserID, &e.Username, &e.LastSeenAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning presence entry: %w", err)
+		}
+		e.Status = models.PresenceOffline
+		entries = append(entries, e)
+		keys = append(keys, presenceStatusKey(e.UserID))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterating users for presence snapshot: %w", err)
+	}
+	rows.Close()
+
+	if len(keys) == 0 {
+		return entries, nil
+	}
+
+	// MGet preserves key order, so statuses[i] corresponds to entries[i]/keys[i].
+	statuses, err := s.Redis.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("fetching presence statuses: %w", err)
+	}
+	for i, raw := range statuses {
+		if str, ok := raw.(string); ok && str != "" {
+			entries[i].Status = models.PresenceStatus(str)
+		}
+	}
+
+	return entries, nil
+}

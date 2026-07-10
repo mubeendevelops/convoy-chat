@@ -20,6 +20,11 @@ export interface User {
   email: string;
   avatar_url?: string;
   bio?: string;
+  // Safe to expose to the user's own client (unlike a password hash) — the
+  // frontend needs it to decide whether to render admin-only UI; the server
+  // remains the real gate on every admin endpoint regardless (Phase 3,
+  // post-v1 — see CLAUDE.md's admin-dashboard entry).
+  is_system_admin: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -112,6 +117,29 @@ export interface MessageWithAuthor {
 // see internal/store/presence.go) is the source of truth for live status.
 export interface UserPresence {
   user_id: string;
+  status: PresenceStatus;
+  last_seen_at?: string;
+}
+
+// GET /admin/rooms row (system-admin only, Phase 3 post-v1) — every room in
+// the system regardless of the caller's own membership. A purpose-built
+// shape, not the full Room.
+export interface AdminRoomSummary {
+  id: string;
+  name?: string;
+  type: RoomType;
+  creator: UserSummary;
+  member_count: number;
+  is_archived: boolean;
+  created_at: string;
+}
+
+// GET /admin/presence row (system-admin only, Phase 3 post-v1) — a
+// system-wide snapshot of every registered user's current status, unlike
+// UserPresence which is per-user and doesn't carry a username.
+export interface AdminPresenceEntry {
+  user_id: string;
+  username: string;
   status: PresenceStatus;
   last_seen_at?: string;
 }

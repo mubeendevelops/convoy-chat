@@ -53,6 +53,16 @@ Render's own health checks and log stream cover the rest; there's no
 Dockerfile `HEALTHCHECK` equivalent needed on Render specifically (that
 instruction is for `docker-compose.prod.yml` / plain `docker run`).
 
+**Granting the first system admin** (Phase 3, post-v1): there's no REST
+endpoint for this by design — sign up a real account through the deployed
+app first, then run the same built image in one-shot admin-grant mode via
+Render's **Shell** tab (or a one-off Job, if your plan has them):
+`./api -promote-admin you@example.com`. It needs `DATABASE_URL`/`REDIS_URL`
+in its environment same as the server itself, connects to both, and exits —
+no traffic is served. Log out and back into the web app afterward; the
+`is_system_admin` flag comes from the login response, not a live mid-session
+refetch.
+
 ## Frontend — Vercel
 
 1. **New Project** → import this repo → set **Root Directory** to

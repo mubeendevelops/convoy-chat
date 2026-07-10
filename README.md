@@ -6,14 +6,16 @@ Redis for presence state and cross-server Pub/Sub broadcast.
 
 **Features:** JWT auth with refresh-token rotation · channels, groups, and
 direct messages · room/member management with admin/member roles
-(promote/demote, kick, admin succession) · real-time messaging with
-persistence and history, editing, and deletion · presence (online/away/offline)
-· typing indicators · read receipts · emoji reactions · multi-server broadcast
-via Redis Pub/Sub.
+(promote/demote, kick, admin succession) · a system-admin dashboard
+(system-wide room/presence visibility + message moderation, a separate
+authority from per-room admin) · real-time messaging with persistence and
+history, editing, and deletion · presence (online/away/offline) · typing
+indicators · read receipts · emoji reactions · multi-server broadcast via
+Redis Pub/Sub.
 
-**Deferred to v2:** admin dashboard. See
-[Known limitations](#known-limitations--v2) below. (File uploads was considered
-and decided against — this stays a pure text/reaction/read-receipt chat app.)
+File uploads was considered and decided against — this stays a pure
+text/reaction/read-receipt chat app. See
+[Known limitations](#known-limitations--v2) below for what's left.
 
 ## Architecture
 
@@ -111,12 +113,14 @@ gorilla.
 ## Repo layout
 
 ```
-cmd/api/            main.go, router.go, logging.go, migrate.go (-migrate mode)
+cmd/api/            main.go, router.go, logging.go, migrate.go (-migrate mode),
+                    promote.go (-promote-admin <email> mode — grants the
+                    first system admin; see Getting started below)
 internal/
   auth/              JWT generate/validate, bcrypt password hashing, auth middleware
   websocket/         Hub, Broker (Redis Pub/Sub bridge), Client (read/write pumps),
                       inbound event dispatch, presence + typing state
-  handlers/          REST handlers: health, auth, users, rooms, messages, reactions
+  handlers/          REST handlers: health, auth, users, rooms, messages, reactions, admin
   models/            User, Room, Message, Presence types
   store/             ALL Postgres/Redis access lives here — handlers and the
                       websocket package never touch pgx/go-redis directly
@@ -158,6 +162,17 @@ go run ./cmd/api -migrate
 go run ./cmd/api
 # → starting server addr=:8080 env=development
 ```
+
+To use the admin dashboard, sign up a user through the app first, then grant
+it system-admin status (no REST endpoint does this, by design — see
+CLAUDE.md's admin-dashboard entry):
+
+```bash
+go run ./cmd/api -promote-admin you@example.com
+```
+
+Log out and back in afterward — `is_system_admin` comes from the login
+response and isn't live-refetched mid-session.
 
 In a second terminal, verify it's healthy:
 
@@ -248,7 +263,7 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 | GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
 | POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair); `{"type":"group","name","description","member_ids":[...]}` → 201, ≥2 `member_ids` required, always private |
 | GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
-| GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member (also covers a nonexistent room, so room IDs can't be enumerated) |
+| GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member and not a system admin (also covers a nonexistent room, so room IDs can't be enumerated) |
 | GET | `/rooms/{room_id}/members` | Bearer JWT | same 403 rule as above |
 | POST | `/rooms/{room_id}/invite` | Bearer JWT, admin only | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member |
 | POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member; publishes `user.left` live and runs admin succession if the leaver was the room's last admin |
@@ -257,7 +272,9 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 | GET | `/rooms/{room_id}/messages` | Bearer JWT | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member |
 | POST | `/rooms/{room_id}/messages` | Bearer JWT | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes |
 | PATCH | `/messages/{message_id}` | Bearer JWT | `{"content"}` → 200 `{id, room_id, content, edited_at}`; **author-only, no admin override**; publishes `message.edited` live over WebSocket; 404 if nonexistent/already deleted, 403 if not the author |
-| DELETE | `/messages/{message_id}` | Bearer JWT | 200 `{"status":"deleted"}`; author or room admin only; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted |
+| DELETE | `/messages/{message_id}` | Bearer JWT | 200 `{"status":"deleted"}`; author, room admin, or system admin; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted |
+| GET | `/admin/rooms` | Bearer JWT, system admin only | `?limit=&offset=` → every room in the system regardless of the caller's own membership; 403 if not a system admin |
+| GET | `/admin/presence` | Bearer JWT, system admin only | every registered user's current presence status, defaulting `offline`; 403 if not a system admin |
 | POST | `/messages/{message_id}/reactions` | Bearer JWT | `{"emoji"}` toggles: 201 `added` / 200 `removed`; publishes `message.reaction` live over WebSocket; 404 if the message is nonexistent or deleted |
 | GET | `/health` | none | `{"postgres":"ok","redis":"ok"}`, 503 if either dependency is down |
 
@@ -344,11 +361,14 @@ backups, rate limiting, graceful shutdown).
 
 ## Known limitations / v2
 
-- No admin dashboard (auth partly ready; not built). File uploads was
-  considered and decided against, not merely deferred — ConvoyChat stays a
-  pure text/reaction/read-receipt chat app; the schema's readiness for it
-  (`message_type` `image`/`file`, `messages.metadata` JSONB) is left in place
-  but unused, same as the still-unused `guest` role.
+- File uploads was considered and decided against, not merely deferred —
+  ConvoyChat stays a pure text/reaction/read-receipt chat app; the schema's
+  readiness for it (`message_type` `image`/`file`, `messages.metadata`
+  JSONB) is left in place but unused, same as the still-unused `guest` role.
+- A newly-promoted system admin (`./api -promote-admin <email>`) only sees
+  the dashboard after logging out and back in — `is_system_admin` comes from
+  the login/signup response and isn't live-refetched mid-session. A minor,
+  accepted rough edge, not a bug.
 - Both the access and refresh JWT/token live in `localStorage`, not an
   httpOnly cookie, so the WebSocket handshake can authenticate via `?token=`.
   This is an accepted, documented tradeoff (XSS-readable tokens) rather than

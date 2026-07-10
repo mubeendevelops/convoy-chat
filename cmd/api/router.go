@@ -77,6 +77,9 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 			r.Patch("/messages/{message_id}", handlers.EditMessage(st, logger))
 			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st))
 			r.Post("/messages/{message_id}/reactions", handlers.ToggleReaction(st, logger))
+
+			r.With(handlers.RequireSystemAdmin(st)).Get("/admin/rooms", handlers.ListAllRooms(st))
+			r.With(handlers.RequireSystemAdmin(st)).Get("/admin/presence", handlers.ListAllUserPresence(st))
 		})
 	})
 

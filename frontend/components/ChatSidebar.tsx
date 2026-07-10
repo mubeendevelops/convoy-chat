@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut } from "lucide-react";
+import Link from "next/link";
+import { LogOut, ShieldCheck } from "lucide-react";
 
 import { RoomsList } from "@/components/RoomsList";
 import { SelfPresenceControl } from "@/components/SelfPresenceControl";
@@ -26,6 +27,15 @@ export function ChatSidebarContent() {
           <SelfPresenceControl />
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* Discoverability only — every /admin/* endpoint is independently
+           * gated server-side regardless of whether this link is shown. */}
+          {user?.is_system_admin && (
+            <Button variant="ghost" size="icon" aria-label="Admin dashboard" asChild>
+              <Link href="/admin">
+                <ShieldCheck className="h-4 w-4" />
+              </Link>
+            </Button>
+          )}
           <ThemeToggle />
           <Button variant="ghost" size="icon" aria-label="Log out" onClick={logout}>
             <LogOut className="h-4 w-4" />

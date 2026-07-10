@@ -126,6 +126,40 @@ func requireActiveMembership(w http.ResponseWriter, r *http.Request, s *store.St
 	return roomID, membership, true
 }
 
+// requireMemberOrSystemAdmin behaves like requireActiveMembership, except a
+// system admin bypasses the active-membership requirement entirely — used
+// only by GetRoom/ListRoomMembers (read-only visibility into any room), NOT
+// ListMessages/SendMessage/InviteMember/etc., which stay room-membership-
+// only. A system admin's power deliberately doesn't extend to messaging or
+// membership management in rooms they don't belong to (see plan.md's
+// admin-dashboard proposal for the full scope boundary).
+func requireMemberOrSystemAdmin(w http.ResponseWriter, r *http.Request, s *store.Store, userID uuid.UUID) (roomID uuid.UUID, ok bool) {
+	roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "room_id must be a valid UUID")
+		return uuid.Nil, false
+	}
+
+	if _, err := s.GetMembership(r.Context(), roomID, userID); err == nil {
+		return roomID, true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check membership")
+		return uuid.Nil, false
+	}
+
+	caller, err := s.GetUserByID(r.Context(), userID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check admin status")
+		return uuid.Nil, false
+	}
+	if !caller.IsSystemAdmin {
+		httpx.WriteError(w, http.StatusForbidden, "forbidden", "you are not a member of this room")
+		return uuid.Nil, false
+	}
+
+	return roomID, true
+}
+
 // CreateRoom handles POST /api/v1/rooms. type "channel" creates a named
 // room with the caller as admin; type "direct" gets-or-creates the 1:1 room
 // with peer_user_id (201 if newly created, 200 if it already existed).
@@ -244,12 +278,13 @@ func ListRooms(s *store.Store) http.HandlerFunc {
 // GetRoom handles GET /api/v1/rooms/{room_id}: details + member list, 403
 // if the caller isn't an active member (also covers a nonexistent room,
 // since it's then indistinguishable from "not a member" — this matches the
-// requested 403 behavior without leaking which room IDs exist).
+// requested 403 behavior without leaking which room IDs exist). A system
+// admin bypasses the membership requirement (see requireMemberOrSystemAdmin).
 func GetRoom(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
-		roomID, _, ok := requireActiveMembership(w, r, s, userID)
+		roomID, ok := requireMemberOrSystemAdmin(w, r, s, userID)
 		if !ok {
 			return
 		}
@@ -270,12 +305,13 @@ func GetRoom(s *store.Store) http.HandlerFunc {
 	}
 }
 
-// ListRoomMembers handles GET /api/v1/rooms/{room_id}/members.
+// ListRoomMembers handles GET /api/v1/rooms/{room_id}/members. A system
+// admin bypasses the membership requirement (see requireMemberOrSystemAdmin).
 func ListRoomMembers(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
-		roomID, _, ok := requireActiveMembership(w, r, s, userID)
+		roomID, ok := requireMemberOrSystemAdmin(w, r, s, userID)
 		if !ok {
 			return
 		}
