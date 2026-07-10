@@ -49,9 +49,15 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/signup", handlers.Signup(st, cfg.JWTSecret, cfg.JWTTTL))
 		r.Post("/auth/login", handlers.Login(st, cfg.JWTSecret, cfg.JWTTTL))
+		// The refresh token itself is the credential here, so this
+		// deliberately sits outside the Bearer-auth group below — an
+		// expired access token is exactly the case this endpoint exists to
+		// recover from.
+		r.Post("/auth/refresh", handlers.Refresh(st, cfg.JWTSecret, cfg.JWTTTL))
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware(cfg.JWTSecret))
+			r.Post("/auth/logout", handlers.Logout(st))
 			r.Get("/users/search", handlers.SearchUsers(st))
 			r.Get("/users/{user_id}", handlers.GetUser(st))
 

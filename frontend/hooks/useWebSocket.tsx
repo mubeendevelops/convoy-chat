@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
+import { api, isAccessTokenExpiringSoon, refreshAccessToken } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   addReadReceipt,
@@ -73,6 +73,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const intentionalCloseRef = useRef(false);
   const hasConnectedOnceRef = useRef(false);
   const joinedRoomsRef = useRef<Set<string>>(new Set());
+  // Guards only the pre-socket-creation gap introduced by the proactive
+  // refresh below (an async await before `new WebSocket(...)` even runs) —
+  // once a socket exists, the existing wsRef.current/readyState checks in
+  // reconnectNow/onopen/onclose take over. Without this, reconnectNow()
+  // firing while a scheduled reconnect's connect() is mid-refresh could
+  // start a second concurrent connect attempt.
+  const connectingRef = useRef(false);
   const subscribersRef = useRef<Map<ServerEventType, Set<(e: ServerEvent) => void>>>(new Map());
   // Populated inside the connection effect so reconnectNow (a stable
   // useCallback declared outside it) can trigger an out-of-band connect.
@@ -279,9 +286,35 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       reconnectTimerRef.current = setTimeout(connect, jittered);
     }
 
-    function connect() {
+    // async, but callers never await it — fire-and-forget, same as
+    // void resyncRoom(roomId) elsewhere in this file.
+    async function connect() {
+      if (connectingRef.current) return; // an attempt is already mid-refresh
+      connectingRef.current = true;
+
+      // The WS handshake authenticates via ?token= on the raw WebSocket
+      // constructor, which never goes through lib/api.ts — so the 401-retry
+      // refresh there doesn't cover it. Check proactively: with access
+      // tokens now short-lived (15m, see plan.md Phase 3), a backgrounded
+      // tab or a laptop waking from sleep would otherwise reconnect with an
+      // already-expired token, get rejected pre-upgrade, and retry forever
+      // with that same stale value.
+      let currentToken = useAuthStore.getState().token;
+      if (isAccessTokenExpiringSoon(currentToken)) {
+        try {
+          currentToken = await refreshAccessToken();
+        } catch {
+          // No usable session left — refreshAccessToken() already cleared
+          // the store, so this effect's own `token` dependency will fire it
+          // again with token null, which tears the socket down for good.
+          connectingRef.current = false;
+          return;
+        }
+      }
+      connectingRef.current = false;
+
       setStatus("connecting");
-      const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token as string)}`);
+      const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(currentToken as string)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {

@@ -9,9 +9,13 @@ import (
 )
 
 const (
-	defaultPort           = 8080
-	defaultAppEnv         = "development"
-	defaultJWTTTL         = 24 * time.Hour
+	defaultPort   = 8080
+	defaultAppEnv = "development"
+	// defaultJWTTTL is intentionally short now that refresh tokens exist
+	// (Phase 3) — a long-lived access token would be redundant defense
+	// alongside a 30-day refresh token (see internal/handlers/auth.go's
+	// refreshTokenTTL and plan.md's Phase 3 proposal).
+	defaultJWTTTL         = 15 * time.Minute
 	defaultCORSOrigins    = "http://localhost:3000"
 	defaultMigrationsPath = "migrations"
 	minJWTSecretLen       = 32

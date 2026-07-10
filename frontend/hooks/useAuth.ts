@@ -21,13 +21,30 @@ export function useAuth() {
 
   const loginMutation = useMutation<AuthResponse, ApiError, LoginRequest>({
     mutationFn: (body) => api.post<AuthResponse>("/api/v1/auth/login", body, { auth: false }),
-    onSuccess: (data) => setAuth(data.user, data.token),
+    onSuccess: (data) => setAuth(data.user, data.token, data.refresh_token),
   });
 
   const signupMutation = useMutation<AuthResponse, ApiError, SignupRequest>({
     mutationFn: (body) => api.post<AuthResponse>("/api/v1/auth/signup", body, { auth: false }),
-    onSuccess: (data) => setAuth(data.user, data.token),
+    onSuccess: (data) => setAuth(data.user, data.token, data.refresh_token),
   });
+
+  // Best-effort server-side revoke (Phase 3: refresh tokens) before clearing
+  // the local session — revokes the whole refresh-token family so a copy of
+  // it sitting anywhere else can't be used to silently re-auth. A network
+  // failure here shouldn't block logging out locally, so it's swallowed
+  // rather than surfaced; clearAuth() always runs.
+  async function logout() {
+    const refreshToken = useAuthStore.getState().refreshToken;
+    if (refreshToken) {
+      try {
+        await api.post("/api/v1/auth/logout", { refresh_token: refreshToken });
+      } catch {
+        // Ignored — see comment above.
+      }
+    }
+    clearAuth();
+  }
 
   return {
     user,
@@ -37,7 +54,7 @@ export function useAuth() {
     isLoggingIn: loginMutation.isPending,
     signup: signupMutation.mutateAsync,
     isSigningUp: signupMutation.isPending,
-    logout: clearAuth,
+    logout,
   };
 }
 

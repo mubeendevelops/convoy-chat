@@ -42,7 +42,7 @@ what Render itself runs. Steps:
    | `DATABASE_URL` | Render Postgres' internal connection string. If it doesn't already include one, append `?sslmode=require`. |
    | `REDIS_URL` | Render's managed Redis/Key-Value internal connection string. |
    | `JWT_SECRET` | A real 32+ char secret — `openssl rand -base64 48`. Never reuse the dev value. |
-   | `JWT_TTL` | `24h` (or omit — that's the default). |
+   | `JWT_TTL` | `15m` (or omit — that's the default). Refresh tokens (Phase 3) cover staying signed in beyond this; see the secrets-rotation note below. |
    | `APP_ENV` | `production` (switches `cmd/api/logging.go` to the JSON slog handler). |
    | `CORS_ALLOWED_ORIGINS` | Your Vercel production domain, e.g. `https://convoychat.vercel.app`. Comma-separate if you need more than one (see the Vercel preview-deployments note below). |
 
@@ -113,12 +113,18 @@ the line; each one says exactly what to do about it.
       `POSTGRES_PASSWORD` / `REDIS_PASSWORD` / `JWT_SECRET` into `.env.prod`
       before running anything beyond a local smoke test (the example file
       ships placeholder values, same spirit as the dev `.env.example`).
-- [ ] Know your rotation story ahead of needing it: this app has no refresh
-      tokens (locked v1 decision), so rotating `JWT_SECRET` invalidates
-      every session immediately — everyone re-logs-in on their next
-      request. Acceptable given the 24h TTL already bounds how long a
-      leaked secret matters, but don't rotate mid-peak-traffic expecting it
-      to be invisible.
+- [x] Know your rotation story: as of Phase 3 (refresh tokens), rotating
+      `JWT_SECRET` invalidates every *access* token immediately, but each
+      client transparently gets a new one via its still-valid refresh token
+      (`POST /auth/refresh`, `lib/api.ts`'s 401-retry interceptor) — no
+      forced re-login. What rotating `JWT_SECRET` does *not* do is revoke
+      refresh tokens themselves (they're opaque, hashed, stored in
+      Postgres — independent of the JWT secret); if the incident requires
+      killing every session outright, that needs a bulk
+      `UPDATE refresh_tokens SET revoked_at = NOW() WHERE revoked_at IS
+      NULL` (no endpoint for this yet — a real gap if "kill all sessions"
+      is ever needed under incident pressure, not just "rotate the
+      secret").
 
 ### HTTPS / WSS
 

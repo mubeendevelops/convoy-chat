@@ -4,12 +4,12 @@ A production-grade, Slack-like real-time chat application: a Go API serving
 REST + WebSocket, a Next.js 14 frontend, PostgreSQL for persistence, and
 Redis for presence state and cross-server Pub/Sub broadcast.
 
-**Features:** JWT auth · channels + direct messages · room/member management
-· real-time messaging with persistence and history · presence
-(online/away/offline) · typing indicators · read receipts · emoji reactions
-· multi-server broadcast via Redis Pub/Sub.
+**Features:** JWT auth with refresh-token rotation · channels + direct
+messages · room/member management · real-time messaging with persistence and
+history · presence (online/away/offline) · typing indicators · read receipts
+· emoji reactions · multi-server broadcast via Redis Pub/Sub.
 
-**Deferred to v2:** file uploads, admin dashboard, refresh tokens. See
+**Deferred to v2:** file uploads, admin dashboard. See
 [Known limitations](#known-limitations--v2) below.
 
 ## Architecture
@@ -215,7 +215,7 @@ container's internal port is still 5432). Remap freely in
 | `DATABASE_URL` | — (required) | pgx pool DSN, e.g. `postgres://convoy:convoy@localhost:5433/convoychat?sslmode=disable` |
 | `REDIS_URL` | — (required) | e.g. `redis://localhost:6379/0` |
 | `JWT_SECRET` | — (required) | HS256 signing secret, 32+ chars; server refuses to boot without it |
-| `JWT_TTL` | `24h` | Access-token lifetime (no refresh tokens in v1) |
+| `JWT_TTL` | `15m` | Access-token lifetime — short, since refresh tokens cover staying signed in beyond it |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated; also gates the WebSocket `Origin` check |
 | `MIGRATIONS_PATH` | `migrations` | Only read by `-migrate` mode; relative to the working directory |
 
@@ -238,8 +238,10 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/auth/signup` | none | 201 `{token, user}`; 400 `invalid_input`, 409 `conflict` (username/email taken) |
-| POST | `/auth/login` | none | 200 `{token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration) |
+| POST | `/auth/signup` | none | 201 `{token, refresh_token, user}`; 400 `invalid_input`, 409 `conflict` (username/email taken) |
+| POST | `/auth/login` | none | 200 `{token, refresh_token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration) |
+| POST | `/auth/refresh` | refresh token (body), no Bearer | `{refresh_token}` → 200 `{token, refresh_token, user}`; rotates (old token revoked, new one issued in the same session family); 401 on a bogus/expired/already-rotated-out token — replaying an already-rotated-out token also revokes every other token in its family |
+| POST | `/auth/logout` | Bearer JWT | `{refresh_token}` → 200 `{"status":"logged_out"}`; revokes the presented token's whole session family; a missing/unknown/already-revoked token is a no-op 200, not an error |
 | GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
 | POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair) |
 | GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
@@ -334,14 +336,16 @@ backups, rate limiting, graceful shutdown).
 
 ## Known limitations / v2
 
-- No file uploads, admin dashboard, or refresh-token rotation (schema and
-  auth are ready for the latter two; not built in v1).
+- No file uploads or admin dashboard (schema/auth partly ready; not built).
 - No promote/demote/kick, and no admin-succession if the last admin leaves a
   channel — a room can end up with no admin. A DM has no admin by design (a
   1:1 conversation has no owner).
-- JWT lives in `localStorage`, not an httpOnly cookie, so the WebSocket
-  handshake can authenticate via `?token=`. This is an accepted, documented
-  v1 tradeoff (XSS-readable token) rather than an oversight.
+- Both the access and refresh JWT/token live in `localStorage`, not an
+  httpOnly cookie, so the WebSocket handshake can authenticate via `?token=`.
+  This is an accepted, documented tradeoff (XSS-readable tokens) rather than
+  an oversight — the refresh token's rotation-with-reuse-detection design
+  (see `plan.md`) bounds how long a stolen one stays useful, rather than
+  preventing theft outright.
 - No endpoint to search or list users — starting a DM means pasting the
   peer's exact user ID. There's also no way to fetch a user's *current*
   presence on demand; presence is learned only from live events received

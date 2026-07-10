@@ -117,8 +117,13 @@ export interface UserPresence {
 
 // ---- REST request/response bodies (internal/handlers/*.go) ----
 
+// Returned by signup/login/refresh alike — all three issue a fresh
+// access+refresh pair (Phase 3: refresh tokens). refresh_token is opaque to
+// the client (a random value, not a JWT) — it's only ever sent back verbatim
+// to POST /auth/refresh or POST /auth/logout, never decoded client-side.
 export interface AuthResponse {
   token: string;
+  refresh_token: string;
   user: User;
 }
 
@@ -131,6 +136,18 @@ export interface SignupRequest {
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+export interface RefreshRequest {
+  refresh_token: string;
+}
+
+export interface LogoutRequest {
+  refresh_token: string;
+}
+
+export interface LogoutResponse {
+  status: "logged_out";
 }
 
 // POST /rooms discriminates on `type`; the backend rejects any other value
