@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef } from "react";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ToastAction } from "@/components/ui/toast";
 import { toast } from "@/hooks/use-toast";
@@ -11,6 +11,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import {
   findMessage,
   flattenSortedDedup,
+  markDeleted,
   markFailed,
   markSending,
   messagesQueryKey,
@@ -21,7 +22,7 @@ import {
   type MessagesData,
   type MessagesPage,
 } from "@/lib/messagesCache";
-import type { MessageWithAuthor, ToggleReactionResponse } from "@/lib/types";
+import type { DeleteMessageResponse, MessageWithAuthor, ToggleReactionResponse } from "@/lib/types";
 
 // ChatMessage moved to lib/messagesCache (shared with the WS provider); re-
 // exported here so existing `@/hooks/useMessages` imports keep working.
@@ -206,4 +207,39 @@ export function useToggleReaction() {
       });
     });
   }, []);
+}
+
+// Deletes a message via DELETE /messages/{id} (backend: author or room admin
+// only — the caller decides who sees the affordance; a server 403/404 still
+// rolls back). Optimistically masks the row as deleted (nulling its content,
+// so the existing "This message was deleted" placeholder renders) and rolls
+// that back on failure by restoring the pre-mutation cache snapshot. There is
+// no message.deleted WS broadcast in v1, so other clients only see the delete
+// on their next history refetch/resync — an accepted gap noted in plan.md.
+export function useDeleteMessage(roomId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) => api.delete<DeleteMessageResponse>(`/api/v1/messages/${messageId}`),
+    onMutate: async (messageId) => {
+      const queryKey = messagesQueryKey(roomId);
+      // Stop an in-flight history fetch from overwriting the optimistic mask
+      // between here and settle.
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<MessagesData>(queryKey);
+      queryClient.setQueryData<MessagesData>(queryKey, (old) =>
+        markDeleted(old, messageId, new Date().toISOString()),
+      );
+      return { previous };
+    },
+    onError: (_err, _messageId, context) => {
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(messagesQueryKey(roomId), context.previous);
+      }
+      toast({
+        variant: "destructive",
+        title: "Couldn't delete message",
+        description: "Check your connection and try again.",
+      });
+    },
+  });
 }

@@ -173,6 +173,32 @@ export function markSending(data: MessagesData | undefined, clientId: string): M
   };
 }
 
+// Masks a message as deleted in place — nulls its content and stamps
+// deleted_at, exactly the shape the backend serves for a soft-deleted message
+// (content retained in Postgres, never returned; see CLAUDE.md), so the
+// existing "This message was deleted" placeholder renders it. Used for the
+// optimistic delete; a no-op reference swap if the message isn't held or is
+// already deleted, so a rollback snapshot restores cleanly. deletedAt is the
+// client's optimistic guess, overwritten by server truth on the next refetch.
+export function markDeleted(
+  data: MessagesData | undefined,
+  messageId: string,
+  deletedAt: string,
+): MessagesData | undefined {
+  if (!data) return data;
+  let changed = false;
+  const pages = data.pages.map((page) =>
+    page.map((m) => {
+      if (m.id === messageId && !m.deleted_at) {
+        changed = true;
+        return { ...m, content: null, deleted_at: deletedAt };
+      }
+      return m;
+    }),
+  );
+  return changed ? { ...data, pages } : data;
+}
+
 // Adds userId to messageId's read_by (deduped, order not meaningful) in
 // response to a live message.read_by event. A no-op MessagesData reference
 // swap when the message isn't found in any held page (e.g. it belongs to a

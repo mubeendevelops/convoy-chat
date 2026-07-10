@@ -1,9 +1,20 @@
 "use client";
 
-import { Users } from "lucide-react";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { LogOut, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   Sheet,
   SheetContent,
@@ -13,11 +24,30 @@ import {
 } from "@/components/ui/sheet";
 import { MembersList } from "@/components/MembersList";
 import { MobileSidebarTrigger } from "@/components/MobileSidebarTrigger";
+import { useLeaveRoom } from "@/hooks/useRooms";
 import { getRoomDisplayName, roomTypeLabel } from "@/lib/rooms";
 import type { RoomDetail } from "@/lib/types";
 
 export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentUserId: string }) {
+  const router = useRouter();
   const displayName = getRoomDisplayName(room, currentUserId, room.members);
+  const leaveRoom = useLeaveRoom();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // A DM has no admin and reads as a conversation, not a room — label the
+  // action accordingly, but the backend membership-leave is the same call.
+  const isDirect = room.type === "direct";
+  const leaveLabel = isDirect ? "Leave conversation" : "Leave room";
+
+  async function handleLeave() {
+    try {
+      await leaveRoom.mutateAsync(room.id);
+      setConfirmOpen(false);
+      router.push("/chat");
+    } catch {
+      // Toast is surfaced by the hook; keep the dialog open so the user can retry.
+    }
+  }
 
   return (
     <header className="flex items-center justify-between gap-4 border-b px-3 py-4 md:px-6">
@@ -29,22 +59,51 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
         </Badge>
       </div>
 
-      <Sheet>
-        <SheetTrigger asChild>
-          <Button variant="ghost" size="sm" className="shrink-0 gap-2">
-            <Users className="h-4 w-4" />
-            {room.members.length} {room.members.length === 1 ? "member" : "members"}
-          </Button>
-        </SheetTrigger>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>Members</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4">
-            <MembersList members={room.members} />
-          </div>
-        </SheetContent>
-      </Sheet>
+      <div className="flex shrink-0 items-center gap-1">
+        <Sheet>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-2">
+              <Users className="h-4 w-4" />
+              {room.members.length} {room.members.length === 1 ? "member" : "members"}
+            </Button>
+          </SheetTrigger>
+          <SheetContent>
+            <SheetHeader>
+              <SheetTitle>Members</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4">
+              <MembersList members={room.members} />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <DialogTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground hover:text-destructive">
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">{leaveLabel}</span>
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{leaveLabel}?</DialogTitle>
+              <DialogDescription>
+                {isDirect
+                  ? "You'll be removed from this conversation and it will disappear from your list. You can start it again later."
+                  : "You'll be removed from this room and it will disappear from your list. You'll need an invite to rejoin."}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" variant="destructive" onClick={handleLeave} disabled={leaveRoom.isPending}>
+                {leaveRoom.isPending ? "Leaving..." : leaveLabel}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
     </header>
   );
 }

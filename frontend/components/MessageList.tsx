@@ -19,6 +19,8 @@ interface MessageListProps {
   onLoadOlder: () => void;
   onRetry: (clientId: string, content: string) => void;
   onToggleReaction: (messageId: string, emoji: string) => void;
+  isRoomAdmin: boolean;
+  onDelete: (messageId: string) => void;
 }
 
 // Scrolling within this many px of the top triggers loading the next-older
@@ -43,6 +45,8 @@ interface RowProps {
   currentUserId: string;
   onRetry: (clientId: string, content: string) => void;
   onToggleReaction: (messageId: string, emoji: string) => void;
+  isRoomAdmin: boolean;
+  onDelete: (messageId: string) => void;
   measureElement: (el: Element | null) => void;
   observeMessage: (el: HTMLElement | null, messageId: string) => void;
 }
@@ -59,6 +63,8 @@ const Row = memo(function Row({
   currentUserId,
   onRetry,
   onToggleReaction,
+  isRoomAdmin,
+  onDelete,
   measureElement,
   observeMessage,
 }: RowProps) {
@@ -83,6 +89,8 @@ const Row = memo(function Row({
         currentUserId={currentUserId}
         onRetry={onRetry}
         onToggleReaction={onToggleReaction}
+        isRoomAdmin={isRoomAdmin}
+        onDelete={onDelete}
       />
     </div>
   );
@@ -98,6 +106,8 @@ export function MessageList({
   onLoadOlder,
   onRetry,
   onToggleReaction,
+  isRoomAdmin,
+  onDelete,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Mirrors containerRef.current as reactive state, purely so
@@ -233,6 +243,8 @@ export function MessageList({
                 currentUserId={currentUserId}
                 onRetry={onRetry}
                 onToggleReaction={onToggleReaction}
+                isRoomAdmin={isRoomAdmin}
+                onDelete={onDelete}
                 measureElement={virtualizer.measureElement}
                 observeMessage={observeMessage}
               />

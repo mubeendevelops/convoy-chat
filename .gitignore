@@ -69,5 +69,4 @@ CLAUDE.local.md
 .claude/
 plan.md
 HANDOFF.md
-ConvoyChat_Complete_Context.md
-ConvoyChat_ClaudeCode_Prompts.md
+finish-chat-app-prompts.md

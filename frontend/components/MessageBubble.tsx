@@ -1,7 +1,17 @@
 import { memo, useState } from "react";
-import { Check, SmilePlus } from "lucide-react";
+import { Check, SmilePlus, Trash2 } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { UserPresence } from "@/components/UserPresence";
 import type { ChatMessage } from "@/hooks/useMessages";
 import { formatMessageTimestamp } from "@/lib/messages";
@@ -22,6 +32,13 @@ interface MessageBubbleProps {
   onRetry?: (clientId: string, content: string) => void;
   /** Toggles the caller's reaction with the given emoji on this message. */
   onToggleReaction?: (messageId: string, emoji: string) => void;
+  /** True when the current user is an admin of this room — combined with
+   * isOwn to decide whether the delete affordance shows, mirroring the
+   * backend's author-or-admin delete rule. */
+  isRoomAdmin?: boolean;
+  /** Soft-deletes this message. Only wired up when the current user is
+   * allowed to (own message or room admin). */
+  onDelete?: (messageId: string) => void;
 }
 
 // Locked design decision: every message gets its own full header (avatar +
@@ -30,8 +47,17 @@ interface MessageBubbleProps {
 // WS event (new message, presence flip, typing, read receipt), and most of
 // those touch at most one row — memo means the other N-1 bubbles skip re-
 // rendering instead of re-computing timestamps/avatars for no reason.
-function MessageBubbleComponent({ message, isOwn, currentUserId, onRetry, onToggleReaction }: MessageBubbleProps) {
+function MessageBubbleComponent({
+  message,
+  isOwn,
+  currentUserId,
+  onRetry,
+  onToggleReaction,
+  isRoomAdmin,
+  onDelete,
+}: MessageBubbleProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const isDeleted = !!message.deleted_at;
   const isSending = message.status === "sending";
   const isFailed = message.status === "failed";
@@ -43,10 +69,20 @@ function MessageBubbleComponent({ message, isOwn, currentUserId, onRetry, onTogg
   // idiom, see CLAUDE.md); a still-optimistic/failed bubble's id is a client
   // nonce, not a real message id yet, so reacting to one would 404 too.
   const canReact = !isDeleted && !message.status;
+  // Author-or-admin, matching the backend's DELETE /messages/{id} rule. A
+  // deleted or still-optimistic bubble can't be deleted (already gone, or has
+  // no real id yet — either would 404). canDelete ⊆ canReact, so its control
+  // lives in the same actions row.
+  const canDelete = canReact && !!onDelete && (isOwn || !!isRoomAdmin);
 
   function toggle(emoji: string) {
     onToggleReaction?.(message.id, emoji);
     setPickerOpen(false);
+  }
+
+  function confirmDelete() {
+    onDelete?.(message.id);
+    setConfirmDeleteOpen(false);
   }
 
   return (
@@ -128,6 +164,36 @@ function MessageBubbleComponent({ message, isOwn, currentUserId, onRetry, onTogg
                   </button>
                 ))}
               </div>
+            )}
+            {canDelete && (
+              <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Delete message"
+                    className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Delete message?</DialogTitle>
+                    <DialogDescription>
+                      This can&apos;t be undone. The message will be replaced with a &ldquo;message
+                      deleted&rdquo; placeholder.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button type="button" variant="outline" onClick={() => setConfirmDeleteOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="button" variant="destructive" onClick={confirmDelete}>
+                      Delete
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             )}
           </div>
         )}
