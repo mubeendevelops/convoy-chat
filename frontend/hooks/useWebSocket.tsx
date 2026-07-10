@@ -175,6 +175,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // now-stale room.members array with nothing to ever refresh it.
           queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
           break;
+        case "user.left":
+          // Mirror of user.joined: a member leaving makes the room's cached
+          // members[] stale, so the members sheet, header count, and
+          // TypingIndicator's username lookups all keep showing them until a
+          // refetch. Invalidate the room detail to drop them live. Fires for a
+          // WS room.leave (the leaver's ChatWindow unmount on navigating out
+          // after POST /rooms/{id}/leave) and for a dropped connection the hub
+          // synthesizes a leave for — see CLAUDE.md's WebSocket event contract.
+          queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
+          break;
         case "message.read_by":
           // No room_id on this event (see CLAUDE.md) — the marker already
           // knows the room they're viewing, but we don't, so patch every
