@@ -151,11 +151,15 @@ export interface LogoutResponse {
   status: "logged_out";
 }
 
-// POST /rooms discriminates on `type`; the backend rejects any other value
-// (e.g. "group" is schema-supported but not creatable in v1).
+// POST /rooms discriminates on `type`. `group` requires at least 2
+// member_ids beyond the creator (see CLAUDE.md's roles-and-groups entry) —
+// otherwise it's just a worse-UX path to what `direct`'s auto-dedup already
+// does better for a real 1:1. Always is_public:false server-side; never
+// browsable/self-joinable.
 export type CreateRoomRequest =
   | { type: "channel"; name: string; description?: string; is_public?: boolean }
-  | { type: "direct"; peer_user_id: string };
+  | { type: "direct"; peer_user_id: string }
+  | { type: "group"; name: string; description?: string; member_ids: string[] };
 
 export interface InviteMemberRequest {
   user_id: string;
@@ -163,6 +167,19 @@ export interface InviteMemberRequest {
 
 export interface LeaveRoomResponse {
   status: "left";
+}
+
+export interface ChangeRoleRequest {
+  role: MemberRole;
+}
+
+export interface ChangeRoleResponse {
+  status: "changed";
+  role: MemberRole;
+}
+
+export interface RemoveMemberResponse {
+  status: "removed";
 }
 
 export interface SendMessageRequest {
@@ -291,4 +308,5 @@ export type ServerEvent =
       action: "added" | "removed";
     }
   | { type: "message.edited"; id: string; room_id: string; content: string; edited_at: string }
+  | { type: "member.role_changed"; room_id: string; user_id: string; role: MemberRole }
   | { type: "error"; code: WsErrorCode; message: string };

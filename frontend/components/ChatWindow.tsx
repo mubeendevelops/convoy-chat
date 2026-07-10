@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 import { MessageInput } from "@/components/MessageInput";
 import { MessageList } from "@/components/MessageList";
@@ -16,12 +17,13 @@ import type { RoomDetail } from "@/lib/types";
 // switching rooms remounts it fresh rather than carrying over the previous
 // room's scroll position and in-flight-send state.
 export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentUserId: string }) {
+  const router = useRouter();
   const { messages, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useMessages(room.id);
   const { send: sendMessage, retry: retryMessage } = useSendMessage(room.id);
   const toggleReaction = useToggleReaction();
   const deleteMessage = useDeleteMessage(room.id);
   const editMessage = useEditMessage(room.id);
-  const { joinRoom, leaveRoom } = useWebSocket();
+  const { joinRoom, leaveRoom, subscribe } = useWebSocket();
   const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
 
   // The backend lets a message's author *or* a room admin delete it; the
@@ -37,6 +39,22 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
     joinRoom(room.id);
     return () => leaveRoom(room.id);
   }, [room.id, joinRoom, leaveRoom]);
+
+  // "Routed out live" for a kick (or a self-leave from another tab): the
+  // central routeEvent handler in useWebSocket.tsx already does the
+  // data-layer cleanup (cache invalidation, Hub-side WS unsubscribe) for any
+  // user.left about ourselves — it has no router, though, so it can't
+  // navigate. This component-level subscribe() listener is exactly for that:
+  // it's scoped to *this* room (the one currently being viewed), so it only
+  // fires the navigation when the departure is actually relevant to what's
+  // on screen right now, not for every room the user happens to belong to.
+  useEffect(() => {
+    return subscribe("user.left", (event) => {
+      if (event.room_id === room.id && event.user_id === currentUserId) {
+        router.replace("/chat");
+      }
+    });
+  }, [room.id, currentUserId, subscribe, router]);
 
   function handleSend(content: string) {
     // Sending implies typing has stopped — no reason to wait out the idle

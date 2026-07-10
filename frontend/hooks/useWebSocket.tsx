@@ -183,16 +183,46 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // now-stale room.members array with nothing to ever refresh it.
           queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
           break;
-        case "user.left":
-          // Mirror of user.joined: a member leaving makes the room's cached
-          // members[] stale, so the members sheet, header count, and
-          // TypingIndicator's username lookups all keep showing them until a
-          // refetch. Invalidate the room detail to drop them live. Fires for a
-          // WS room.leave (the leaver's ChatWindow unmount on navigating out
-          // after POST /rooms/{id}/leave) and for a dropped connection the hub
-          // synthesizes a leave for — see CLAUDE.md's WebSocket event contract.
-          queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
+        case "user.left": {
+          const selfUserId = useAuthStore.getState().user?.id;
+          if (event.user_id === selfUserId) {
+            // It's us — either we left (REST leave now also broadcasts this,
+            // see CLAUDE.md) or we were just kicked (DELETE .../members/{id}).
+            // A REST membership change never touches this socket's own Hub-
+            // side room subscription, so without this our client would keep
+            // silently receiving that room's traffic until the next
+            // reconnect — leaveRoom() both sends the WS room.leave that
+            // cleans that up server-side and drops the room from
+            // joinedRoomsRef so a future reconnect doesn't rejoin it.
+            // **invalidateQueries, not removeQueries**, for room/messages:
+            // unlike useLeaveRoom's onSuccess (which removes a cache entry
+            // for a page the navigation has *already* swapped away from), a
+            // kick can land while ChatWindow/RoomPage for this exact room is
+            // still actively mounted and observing — removeQueries alone
+            // doesn't reliably kick an active observer into an immediate
+            // refetch the way invalidateQueries does, so the stale room
+            // content kept rendering until an unrelated remount (caught via
+            // real two-client WS verification, not just a type-check pass).
+            // The refetch this triggers will 403 (server truth), which
+            // RoomPage's existing error branch renders — the actual
+            // navigate-away happens via a room-scoped subscribe() listener
+            // in ChatWindow, not here (this hook has no router).
+            leaveRoom(event.room_id);
+            queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
+            queryClient.invalidateQueries({ queryKey: ["messages", event.room_id] });
+            queryClient.invalidateQueries({ queryKey: ["rooms"] });
+          } else {
+            // Mirror of user.joined: a member leaving makes the room's cached
+            // members[] stale, so the members sheet, header count, and
+            // TypingIndicator's username lookups all keep showing them until
+            // a refetch. Invalidate the room detail to drop them live. Fires
+            // for a WS room.leave, a dropped connection the hub synthesizes a
+            // leave for, a REST leave, or a kick (see CLAUDE.md's WebSocket
+            // event contract).
+            queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
+          }
           break;
+        }
         case "message.read_by":
           // No room_id on this event (see CLAUDE.md) — the marker already
           // knows the room they're viewing, but we don't, so patch every
@@ -227,6 +257,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
             applyEdit(old, event.id, event.content, event.edited_at),
           );
           break;
+        case "member.role_changed":
+          // Same treatment as user.joined/user.left: the room's cached
+          // members[] (embedded in RoomDetail) is now stale for one member's
+          // role — invalidate to refetch rather than patching in place, since
+          // there's no separate members-list cache key to surgically update.
+          // Fires for both an explicit promote/demote and a leave-triggered
+          // admin-succession auto-promotion.
+          queryClient.invalidateQueries({ queryKey: ["room", event.room_id] });
+          break;
         case "error":
           console.warn("ws error event:", event.code, event.message);
           break;
@@ -239,7 +278,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       // touching this switch.
       subscribersRef.current.get(event.type)?.forEach((listener) => listener(event));
     },
-    [queryClient],
+    [queryClient, leaveRoom],
   );
 
   // Backfill messages missed while the socket was down. Anchored on the newest

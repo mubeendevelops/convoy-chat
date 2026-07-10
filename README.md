@@ -4,11 +4,12 @@ A production-grade, Slack-like real-time chat application: a Go API serving
 REST + WebSocket, a Next.js 14 frontend, PostgreSQL for persistence, and
 Redis for presence state and cross-server Pub/Sub broadcast.
 
-**Features:** JWT auth with refresh-token rotation · channels + direct
-messages · room/member management · real-time messaging with persistence and
-history, editing, and deletion · presence (online/away/offline) · typing
-indicators · read receipts · emoji reactions · multi-server broadcast via
-Redis Pub/Sub.
+**Features:** JWT auth with refresh-token rotation · channels, groups, and
+direct messages · room/member management with admin/member roles
+(promote/demote, kick, admin succession) · real-time messaging with
+persistence and history, editing, and deletion · presence (online/away/offline)
+· typing indicators · read receipts · emoji reactions · multi-server broadcast
+via Redis Pub/Sub.
 
 **Deferred to v2:** admin dashboard. See
 [Known limitations](#known-limitations--v2) below. (File uploads was considered
@@ -245,12 +246,14 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 | POST | `/auth/refresh` | refresh token (body), no Bearer | `{refresh_token}` → 200 `{token, refresh_token, user}`; rotates (old token revoked, new one issued in the same session family); 401 on a bogus/expired/already-rotated-out token — replaying an already-rotated-out token also revokes every other token in its family |
 | POST | `/auth/logout` | Bearer JWT | `{refresh_token}` → 200 `{"status":"logged_out"}`; revokes the presented token's whole session family; a missing/unknown/already-revoked token is a no-op 200, not an error |
 | GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
-| POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair) |
+| POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair); `{"type":"group","name","description","member_ids":[...]}` → 201, ≥2 `member_ids` required, always private |
 | GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
 | GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member (also covers a nonexistent room, so room IDs can't be enumerated) |
 | GET | `/rooms/{room_id}/members` | Bearer JWT | same 403 rule as above |
 | POST | `/rooms/{room_id}/invite` | Bearer JWT, admin only | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member |
-| POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member |
+| POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member; publishes `user.left` live and runs admin succession if the leaver was the room's last admin |
+| PATCH | `/rooms/{room_id}/members/{user_id}/role` | Bearer JWT, admin only | `{"role":"admin"\|"member"}` → 200; idempotent; publishes `member.role_changed` live; 404 non-member target, 409 demoting the room's last admin |
+| DELETE | `/rooms/{room_id}/members/{user_id}` | Bearer JWT, admin only | 200 `{"status":"removed"}` — kicks the target; publishes `user.left` live; 400 on self-removal (use `.../leave`), 404 non-member target |
 | GET | `/rooms/{room_id}/messages` | Bearer JWT | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member |
 | POST | `/rooms/{room_id}/messages` | Bearer JWT | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes |
 | PATCH | `/messages/{message_id}` | Bearer JWT | `{"content"}` → 200 `{id, room_id, content, edited_at}`; **author-only, no admin override**; publishes `message.edited` live over WebSocket; 404 if nonexistent/already deleted, 403 if not the author |
@@ -293,6 +296,7 @@ checked against `CORS_ALLOWED_ORIGINS`; clients that send no `Origin` header
 { "type": "message.read_by",     "message_id": "<uuid>", "read_by_user_id": "<uuid>" }
 { "type": "message.reaction",    "message_id": "<uuid>", "user_id": "<uuid>", "emoji": "👍", "action": "added" | "removed" }
 { "type": "message.edited",      "id": "<uuid>", "room_id": "<uuid>", "content": "edited text", "edited_at": "2026-07-10T15:35:00Z" }
+{ "type": "member.role_changed", "room_id": "<uuid>", "user_id": "<uuid>", "role": "admin" | "member" }
 { "type": "error",               "code": "...", "message": "..." }
 ```
 
@@ -344,20 +348,17 @@ backups, rate limiting, graceful shutdown).
   considered and decided against, not merely deferred — ConvoyChat stays a
   pure text/reaction/read-receipt chat app; the schema's readiness for it
   (`message_type` `image`/`file`, `messages.metadata` JSONB) is left in place
-  but unused, same as the unused `group` room type.
-- No promote/demote/kick, and no admin-succession if the last admin leaves a
-  channel — a room can end up with no admin. A DM has no admin by design (a
-  1:1 conversation has no owner).
+  but unused, same as the still-unused `guest` role.
 - Both the access and refresh JWT/token live in `localStorage`, not an
   httpOnly cookie, so the WebSocket handshake can authenticate via `?token=`.
   This is an accepted, documented tradeoff (XSS-readable tokens) rather than
   an oversight — the refresh token's rotation-with-reuse-detection design
   (see `plan.md`) bounds how long a stolen one stays useful, rather than
   preventing theft outright.
-- No endpoint to search or list users — starting a DM means pasting the
-  peer's exact user ID. There's also no way to fetch a user's *current*
-  presence on demand; presence is learned only from live events received
-  after your socket connects (a teammate nobody's "heard from" this session
-  shows as offline until they do something).
-- `group` rooms are schema-supported but not exposed by any v1 endpoint;
-  only `channel` and `direct` are creatable today.
+- Starting a DM still means pasting the peer's exact user ID (`CreateRoomDialog`'s
+  direct-message tab never got migrated to the username-search picker that
+  invite and group-creation already use — a known, tracked follow-up, not an
+  oversight). There's also no way to fetch a user's *current* presence on
+  demand; presence is learned only from live events received after your
+  socket connects (a teammate nobody's "heard from" this session shows as
+  offline until they do something).

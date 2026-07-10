@@ -13,4 +13,9 @@ var (
 	// revoke the whole token family, not just reject the one request.
 	ErrRefreshTokenReused = errors.New("refresh token already used")
 	ErrTokenExpired       = errors.New("token expired")
+	// ErrLastAdmin is returned by ChangeMemberRole when a demote would leave
+	// a room with zero active admins — a deliberate demote is rejected
+	// outright rather than auto-succeeding, unlike a departure (see
+	// PromoteOldestIfNoAdmins).
+	ErrLastAdmin = errors.New("cannot demote the last admin")
 )

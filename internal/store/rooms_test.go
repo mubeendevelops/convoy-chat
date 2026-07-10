@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -206,6 +207,197 @@ func TestAddMember_RemoveMember_Reactivation(t *testing.T) {
 		stranger := mustCreateUser(t, s, "stranger")
 		if err := s.RemoveMember(ctx, room.ID, stranger); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("got error %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestCreateGroup(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	memberA := mustCreateUser(t, s, "member_a")
+	memberB := mustCreateUser(t, s, "member_b")
+
+	room, err := s.CreateGroup(ctx, creator, "trip-planning", nil, []uuid.UUID{memberA, memberB})
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if room.Type != models.RoomTypeGroup {
+		t.Errorf("got type %q, want %q", room.Type, models.RoomTypeGroup)
+	}
+	if room.IsPublic {
+		t.Error("a group room must never be public")
+	}
+
+	members, err := s.ListMembers(ctx, room.ID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("got %d members, want 3 (creator + 2)", len(members))
+	}
+
+	creatorMembership, err := s.GetMembership(ctx, room.ID, creator)
+	if err != nil {
+		t.Fatalf("GetMembership(creator): %v", err)
+	}
+	if creatorMembership.Role != models.RoleAdmin {
+		t.Errorf("got creator role %q, want %q", creatorMembership.Role, models.RoleAdmin)
+	}
+
+	memberAMembership, err := s.GetMembership(ctx, room.ID, memberA)
+	if err != nil {
+		t.Fatalf("GetMembership(memberA): %v", err)
+	}
+	if memberAMembership.Role != models.RoleMember {
+		t.Errorf("got memberA role %q, want %q", memberAMembership.Role, models.RoleMember)
+	}
+}
+
+func TestChangeMemberRole(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	member := mustCreateUser(t, s, "member")
+
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, err := s.AddMember(ctx, room.ID, member, models.RoleMember); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	t.Run("promotes a member to admin", func(t *testing.T) {
+		changed, err := s.ChangeMemberRole(ctx, room.ID, member, models.RoleAdmin)
+		if err != nil {
+			t.Fatalf("ChangeMemberRole (promote): %v", err)
+		}
+		if !changed {
+			t.Error("expected changed=true for a genuine promotion")
+		}
+		m, err := s.GetMembership(ctx, room.ID, member)
+		if err != nil {
+			t.Fatalf("GetMembership: %v", err)
+		}
+		if m.Role != models.RoleAdmin {
+			t.Errorf("got role %q, want %q", m.Role, models.RoleAdmin)
+		}
+	})
+
+	t.Run("re-setting the same role is a no-op", func(t *testing.T) {
+		changed, err := s.ChangeMemberRole(ctx, room.ID, member, models.RoleAdmin)
+		if err != nil {
+			t.Fatalf("ChangeMemberRole (no-op): %v", err)
+		}
+		if changed {
+			t.Error("expected changed=false when the role didn't actually change")
+		}
+	})
+
+	t.Run("demotes back to member (two admins present)", func(t *testing.T) {
+		changed, err := s.ChangeMemberRole(ctx, room.ID, member, models.RoleMember)
+		if err != nil {
+			t.Fatalf("ChangeMemberRole (demote): %v", err)
+		}
+		if !changed {
+			t.Error("expected changed=true for a genuine demotion")
+		}
+	})
+
+	t.Run("demoting the last remaining admin is rejected", func(t *testing.T) {
+		if _, err := s.ChangeMemberRole(ctx, room.ID, creator, models.RoleMember); !errors.Is(err, store.ErrLastAdmin) {
+			t.Errorf("got error %v, want ErrLastAdmin", err)
+		}
+		// And the role must be unchanged after the rejection.
+		m, err := s.GetMembership(ctx, room.ID, creator)
+		if err != nil {
+			t.Fatalf("GetMembership: %v", err)
+		}
+		if m.Role != models.RoleAdmin {
+			t.Errorf("got role %q after a rejected demote, want it to stay %q", m.Role, models.RoleAdmin)
+		}
+	})
+
+	t.Run("changing role of a non-member 404s", func(t *testing.T) {
+		stranger := mustCreateUser(t, s, "stranger")
+		if _, err := s.ChangeMemberRole(ctx, room.ID, stranger, models.RoleAdmin); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("got error %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestPromoteOldestIfNoAdmins(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	older := mustCreateUser(t, s, "older_member")
+	younger := mustCreateUser(t, s, "younger_member")
+
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, err := s.AddMember(ctx, room.ID, older, models.RoleMember); err != nil {
+		t.Fatalf("AddMember(older): %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // ensure a strictly later joined_at than `older`
+	if _, err := s.AddMember(ctx, room.ID, younger, models.RoleMember); err != nil {
+		t.Fatalf("AddMember(younger): %v", err)
+	}
+
+	t.Run("no-ops while an admin remains", func(t *testing.T) {
+		promoted, err := s.PromoteOldestIfNoAdmins(ctx, room.ID)
+		if err != nil {
+			t.Fatalf("PromoteOldestIfNoAdmins: %v", err)
+		}
+		if promoted != nil {
+			t.Errorf("expected no promotion while the creator is still admin, got %+v", promoted)
+		}
+	})
+
+	t.Run("promotes the oldest remaining member once the sole admin leaves", func(t *testing.T) {
+		if err := s.RemoveMember(ctx, room.ID, creator); err != nil {
+			t.Fatalf("RemoveMember(creator): %v", err)
+		}
+
+		promoted, err := s.PromoteOldestIfNoAdmins(ctx, room.ID)
+		if err != nil {
+			t.Fatalf("PromoteOldestIfNoAdmins: %v", err)
+		}
+		if promoted == nil {
+			t.Fatal("expected a promotion once the room has zero admins")
+		}
+		if promoted.UserID != older {
+			t.Errorf("got promoted user %s, want %s (the older remaining member)", promoted.UserID, older)
+		}
+		if promoted.Role != models.RoleAdmin {
+			t.Errorf("got promoted role %q, want %q", promoted.Role, models.RoleAdmin)
+		}
+
+		// A second call must no-op now that the room has an admin again.
+		second, err := s.PromoteOldestIfNoAdmins(ctx, room.ID)
+		if err != nil {
+			t.Fatalf("PromoteOldestIfNoAdmins (second call): %v", err)
+		}
+		if second != nil {
+			t.Errorf("expected no further promotion, got %+v", second)
+		}
+	})
+
+	t.Run("no-ops on a direct room even with zero admins (DMs have none by design)", func(t *testing.T) {
+		alice := mustCreateUser(t, s, "dm_alice")
+		bob := mustCreateUser(t, s, "dm_bob")
+		dm, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+		if err != nil {
+			t.Fatalf("GetOrCreateDirectRoom: %v", err)
+		}
+		promoted, err := s.PromoteOldestIfNoAdmins(ctx, dm.ID)
+		if err != nil {
+			t.Fatalf("PromoteOldestIfNoAdmins(direct): %v", err)
+		}
+		if promoted != nil {
+			t.Errorf("expected no promotion on a direct room, got %+v", promoted)
 		}
 	})
 }

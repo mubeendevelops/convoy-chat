@@ -52,6 +52,7 @@ export function RoomsList() {
   const { data: rooms, isLoading, isError } = useRooms();
 
   const channels = rooms?.filter((r) => r.type === "channel") ?? [];
+  const groups = rooms?.filter((r) => r.type === "group") ?? [];
   const directs = rooms?.filter((r) => r.type === "direct") ?? [];
 
   return (
@@ -83,6 +84,20 @@ export function RoomsList() {
             <div className="space-y-1">
               <h2 className="px-3 text-xs font-semibold uppercase text-muted-foreground">Channels</h2>
               {channels.map((room) => (
+                <RoomRow
+                  key={room.id}
+                  room={room}
+                  isActive={params.roomId === room.id}
+                  currentUserId={user?.id ?? ""}
+                />
+              ))}
+            </div>
+          )}
+
+          {groups.length > 0 && (
+            <div className="space-y-1">
+              <h2 className="px-3 text-xs font-semibold uppercase text-muted-foreground">Groups</h2>
+              {groups.map((room) => (
                 <RoomRow
                   key={room.id}
                   room={room}

@@ -40,11 +40,15 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
   const isDirect = room.type === "direct";
   const leaveLabel = isDirect ? "Leave conversation" : "Leave room";
 
-  // The invite endpoint is admin-only and DMs have no admin, so the picker
-  // shows only for a channel where the current user is an admin — matching
-  // exactly who the backend would let invite.
-  const canInvite =
-    room.type === "channel" && room.members.some((m) => m.user.id === currentUserId && m.role === "admin");
+  // Type-agnostic: any room type with an admin concept works the same way
+  // here — a DM has no admin member at all, so this is naturally false
+  // there without a type-specific check, same idiom the backend uses.
+  const isRoomAdmin = room.members.some((m) => m.user.id === currentUserId && m.role === "admin");
+
+  // The invite endpoint is admin-only and isn't type-restricted server-side
+  // (it works for a group exactly the same as a channel) — DMs are excluded
+  // via isRoomAdmin alone, since they have no admin to satisfy the check.
+  const canInvite = isRoomAdmin;
 
   async function handleLeave() {
     try {
@@ -81,7 +85,12 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
               <SheetTitle>Members</SheetTitle>
             </SheetHeader>
             <div className="mt-4">
-              <MembersList members={room.members} />
+              <MembersList
+                members={room.members}
+                roomId={room.id}
+                currentUserId={currentUserId}
+                isViewerAdmin={isRoomAdmin}
+              />
             </div>
           </SheetContent>
         </Sheet>

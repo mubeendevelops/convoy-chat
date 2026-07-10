@@ -91,6 +91,168 @@ func (s *Store) CreateChannel(ctx context.Context, creatorID uuid.UUID, name str
 	return room, nil
 }
 
+// CreateGroup creates a named, always-private multi-person room and adds
+// creatorID as its admin plus every memberID as a plain member, atomically.
+// Mirrors CreateChannel's shape; is_public is always false for a group (never
+// browsable/self-joinable — ListPublicChannels/JoinChannel are scoped to
+// type='channel' already). Callers are expected to have already validated
+// memberIDs (real users, no self-reference, deduped) — this method trusts
+// its input the same way insertMember does.
+func (s *Store) CreateGroup(ctx context.Context, creatorID uuid.UUID, name string, description *string, memberIDs []uuid.UUID) (*models.Room, error) {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	room := &models.Room{
+		ID:          uuid.New(),
+		Name:        &name,
+		Type:        models.RoomTypeGroup,
+		CreatorID:   creatorID,
+		Description: description,
+	}
+
+	const insertRoomStmt = `
+		INSERT INTO rooms (id, name, type, creator_id, description, is_public)
+		VALUES ($1, $2, $3, $4, $5, false)
+		RETURNING is_archived, is_public, created_at, updated_at`
+
+	err = tx.QueryRow(ctx, insertRoomStmt, room.ID, room.Name, room.Type, room.CreatorID, room.Description).
+		Scan(&room.IsArchived, &room.IsPublic, &room.CreatedAt, &room.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("inserting room: %w", err)
+	}
+
+	if err := insertMember(ctx, tx, room.ID, creatorID, models.RoleAdmin); err != nil {
+		return nil, err
+	}
+	for _, memberID := range memberIDs {
+		if err := insertMember(ctx, tx, room.ID, memberID, models.RoleMember); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return room, nil
+}
+
+// ChangeMemberRole sets userID's role within roomID to newRole. changed is
+// false (no error) when the member already held newRole — a no-op success,
+// same "nothing changed, nothing to announce" idiom as MarkMessageRead, so
+// the caller knows not to broadcast member.role_changed. Demoting the room's
+// last remaining active admin to member is rejected with ErrLastAdmin — a
+// deliberate demote is different from a departure (see
+// PromoteOldestIfNoAdmins), so it doesn't get an auto-succession path; the
+// caller can promote someone else first. Runs inside a transaction with a
+// row lock on the admin-count check to stay race-safe under concurrent
+// demotes of the same room's admins.
+func (s *Store) ChangeMemberRole(ctx context.Context, roomID, userID uuid.UUID, newRole models.MemberRole) (changed bool, err error) {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const selectStmt = `
+		SELECT role FROM room_members
+		WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+		FOR UPDATE`
+
+	var currentRole models.MemberRole
+	err = tx.QueryRow(ctx, selectStmt, roomID, userID).Scan(&currentRole)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, fmt.Errorf("looking up member role: %w", err)
+	}
+
+	if currentRole == newRole {
+		return false, nil
+	}
+
+	if currentRole == models.RoleAdmin && newRole != models.RoleAdmin {
+		const countAdminsStmt = `
+			SELECT COUNT(*) FROM room_members
+			WHERE room_id = $1 AND role = 'admin' AND left_at IS NULL`
+		var adminCount int
+		if err := tx.QueryRow(ctx, countAdminsStmt, roomID).Scan(&adminCount); err != nil {
+			return false, fmt.Errorf("counting room admins: %w", err)
+		}
+		if adminCount <= 1 {
+			return false, ErrLastAdmin
+		}
+	}
+
+	const updateStmt = `
+		UPDATE room_members SET role = $3
+		WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL`
+	if _, err := tx.Exec(ctx, updateStmt, roomID, userID, newRole); err != nil {
+		return false, fmt.Errorf("updating member role: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing transaction: %w", err)
+	}
+	return true, nil
+}
+
+// PromoteOldestIfNoAdmins checks whether roomID currently has zero active
+// admins and, if so, promotes its longest-tenured remaining active member
+// (oldest joined_at, id as a stable tiebreak) to admin. Returns the promoted
+// member, or nil if no promotion was needed or possible (an admin still
+// remains, the room's type has no admin concept — gated to 'channel'/'group'
+// so a 'direct' room's participants are never touched, preserving the
+// invariant that DM members are always plain 'member' — or no members are
+// left at all). One atomic statement, run by the caller immediately after a
+// departure (LeaveRoom today; a future kick reuses this too, though kicking
+// can never actually zero out admins since the kicker themselves is always
+// an admin who isn't removing themselves).
+//
+// Accepted race (not fixed here): two members of the same admin-less-about-
+// to-happen room departing in the same instant could each independently
+// evaluate "no admin exists" against their own snapshot and each promote a
+// candidate — over-promotion (two new admins instead of one), not data
+// corruption or lockout. Rare and low-harm enough that a pg_advisory_xact_lock
+// isn't justified here.
+func (s *Store) PromoteOldestIfNoAdmins(ctx context.Context, roomID uuid.UUID) (*models.RoomMember, error) {
+	const q = `
+		WITH admin_exists AS (
+			SELECT 1 FROM room_members
+			WHERE room_id = $1 AND role = 'admin' AND left_at IS NULL
+			LIMIT 1
+		),
+		room_check AS (
+			SELECT 1 FROM rooms WHERE id = $1 AND type IN ('channel', 'group')
+		),
+		candidate AS (
+			SELECT id FROM room_members
+			WHERE room_id = $1 AND left_at IS NULL
+			  AND EXISTS (SELECT 1 FROM room_check)
+			  AND NOT EXISTS (SELECT 1 FROM admin_exists)
+			ORDER BY joined_at ASC, id ASC
+			LIMIT 1
+		)
+		UPDATE room_members
+		SET role = 'admin'
+		WHERE id IN (SELECT id FROM candidate)
+		RETURNING id, room_id, user_id, role, joined_at, left_at`
+
+	var m models.RoomMember
+	err := s.DB.QueryRow(ctx, q, roomID).Scan(&m.ID, &m.RoomID, &m.UserID, &m.Role, &m.JoinedAt, &m.LeftAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("promoting oldest member: %w", err)
+	}
+	return &m, nil
+}
+
 // GetOrCreateDirectRoom returns the existing direct room between userA and
 // userB, or creates one if none exists yet. created is true only when a new
 // room was inserted. A Postgres advisory lock keyed on the sorted user pair

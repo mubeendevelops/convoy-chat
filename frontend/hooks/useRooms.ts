@@ -6,9 +6,12 @@ import { toast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { isValidUuid } from "@/lib/validation";
 import type {
+  ChangeRoleResponse,
   CreateRoomRequest,
   LeaveRoomResponse,
+  MemberRole,
   PublicChannel,
+  RemoveMemberResponse,
   Room,
   RoomDetail,
   RoomMember,
@@ -132,6 +135,54 @@ export function useInviteMember(roomId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["room", roomId] });
       queryClient.invalidateQueries({ queryKey: ["user-search"] });
+    },
+  });
+}
+
+// Promotes/demotes a member via PATCH /rooms/{id}/members/{user_id}/role
+// (admin-only, enforced server-side — the caller decides who sees the
+// controls). No optimistic update: the live member.role_changed broadcast
+// (routed centrally in useWebSocket's routeEvent) is what actually updates
+// the members list, the same "REST call + live broadcast does the work"
+// pattern already used for reactions — this mutation just fires the request
+// and surfaces a toast on failure (e.g. a stale demote of the room's last
+// admin racing another admin's own change, or a network error).
+export function useChangeMemberRole(roomId: string) {
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: MemberRole }) =>
+      api.patch<ChangeRoleResponse>(`/api/v1/rooms/${roomId}/members/${userId}/role`, { role }),
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Couldn't change that member's role",
+        description: "Check your connection and try again.",
+      });
+    },
+  });
+}
+
+// Kicks a member via DELETE /rooms/{id}/members/{user_id} (admin-only,
+// enforced server-side; self-removal is rejected — that's what leaving is
+// for). No optimistic update here either: the live user.left broadcast is
+// what removes them from an already-open members list for everyone still in
+// the room, including — via useWebSocket's self-cleanup — the removed
+// member's own client. This mutation still invalidates the room detail
+// directly for the *kicker's* own immediate feedback, since their own
+// user.left delivery is exactly as live as anyone else's and there's no
+// reason to wait on the round trip when the outcome is already known.
+export function useRemoveMember(roomId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.delete<RemoveMemberResponse>(`/api/v1/rooms/${roomId}/members/${userId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["room", roomId] });
+    },
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Couldn't remove that member",
+        description: "Check your connection and try again.",
+      });
     },
   });
 }

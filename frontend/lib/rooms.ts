@@ -14,6 +14,9 @@ export function getRoomDisplayName(
     const peer = members?.find((m) => m.user.id !== currentUserId);
     return peer ? peer.user.username : "Direct Message";
   }
+  if (room.type === "group") {
+    return room.name ?? "Untitled Group";
+  }
   return room.name ?? "Untitled Channel";
 }
 

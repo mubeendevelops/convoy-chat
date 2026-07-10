@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -18,11 +20,16 @@ import (
 
 const maxRoomNameLen = 255
 
+const minGroupMembers = 2
+
 var (
-	errInvalidRoomName   = errors.New("name is required and must be 1-255 characters")
-	errInvalidPeerUserID = errors.New("peer_user_id must be a valid UUID")
-	errSelfDirect        = errors.New("cannot create a direct room with yourself")
-	errInvalidRoomType   = errors.New(`type must be "channel" or "direct"`)
+	errInvalidRoomName    = errors.New("name is required and must be 1-255 characters")
+	errInvalidPeerUserID  = errors.New("peer_user_id must be a valid UUID")
+	errSelfDirect         = errors.New("cannot create a direct room with yourself")
+	errInvalidRoomType    = errors.New(`type must be "channel", "direct", or "group"`)
+	errTooFewGroupMembers = fmt.Errorf("member_ids must include at least %d other user(s)", minGroupMembers)
+	errSelfInGroupMembers = errors.New("member_ids must not include yourself")
+	errInvalidRole        = errors.New(`role must be "admin" or "member"`)
 )
 
 // validateRoomName assumes name has already been trimmed.
@@ -55,6 +62,39 @@ type createRoomRequest struct {
 	// true (public/browsable). An explicit false creates a private,
 	// invite-only channel — the pre-Phase-2 behavior, opted into.
 	IsPublic *bool `json:"is_public,omitempty"`
+	// MemberIDs only applies to type "group": the initial member list beyond
+	// the creator (who's always the admin). A group is always is_public=false
+	// — never browsable/self-joinable, unlike a channel.
+	MemberIDs []string `json:"member_ids,omitempty"`
+}
+
+// validateGroupMemberIDs parses and validates a group creation's member_ids:
+// every entry must be a well-formed UUID, none may be the creator themselves
+// (a likely client bug worth surfacing, unlike a duplicate — which is just
+// silently deduped), and at least minGroupMembers distinct others are
+// required so "group" doesn't become a worse-UX path to what a direct room's
+// auto-dedup already handles better for a real 1:1.
+func validateGroupMemberIDs(raw []string, creatorID uuid.UUID) ([]uuid.UUID, error) {
+	seen := make(map[uuid.UUID]bool, len(raw))
+	ids := make([]uuid.UUID, 0, len(raw))
+	for _, r := range raw {
+		id, err := uuid.Parse(r)
+		if err != nil {
+			return nil, errors.New("member_ids must be valid UUIDs")
+		}
+		if id == creatorID {
+			return nil, errSelfInGroupMembers
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) < minGroupMembers {
+		return nil, errTooFewGroupMembers
+	}
+	return ids, nil
 }
 
 type roomDetailResponse struct {
@@ -147,6 +187,38 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 				status = http.StatusCreated
 			}
 			httpx.WriteJSON(w, status, room)
+
+		case "group":
+			name := strings.TrimSpace(req.Name)
+			if err := validateRoomName(name); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
+				return
+			}
+
+			memberIDs, err := validateGroupMemberIDs(req.MemberIDs, userID)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
+				return
+			}
+
+			for _, memberID := range memberIDs {
+				if _, err := s.GetUserByID(r.Context(), memberID); err != nil {
+					if errors.Is(err, store.ErrNotFound) {
+						httpx.WriteError(w, http.StatusNotFound, "not_found", "one or more member_ids not found")
+						return
+					}
+					httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to look up member")
+					return
+				}
+			}
+
+			room, err := s.CreateGroup(r.Context(), userID, name, req.Description, memberIDs)
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create room")
+				return
+			}
+
+			httpx.WriteJSON(w, http.StatusCreated, room)
 
 		default:
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", errInvalidRoomType.Error())
@@ -368,8 +440,61 @@ func JoinChannel(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	}
 }
 
-// LeaveRoom handles POST /api/v1/rooms/{room_id}/leave.
-func LeaveRoom(s *store.Store) http.HandlerFunc {
+// leftEvent matches the WS "user.left" shape from CLAUDE.md:
+// {"type":"user.left","user_id","room_id"}. Defined here rather than
+// internal/websocket for the same reason joinedEvent/reactionEvent are —
+// publishing only needs store.PublishRoomEvent, not the Hub/Broker.
+type leftEvent struct {
+	Type   string    `json:"type"`
+	UserID uuid.UUID `json:"user_id"`
+	RoomID uuid.UUID `json:"room_id"`
+}
+
+// memberRoleChangedEvent matches the new WS "member.role_changed" shape:
+// {"type","room_id","user_id","role"} — fired by both an explicit
+// PATCH .../role change and a leave-triggered auto-promotion
+// (PromoteOldestIfNoAdmins), so an already-open members list updates a
+// badge live and the affected user's own client can unlock/lock
+// admin-only controls without a refetch.
+type memberRoleChangedEvent struct {
+	Type   string            `json:"type"`
+	RoomID uuid.UUID         `json:"room_id"`
+	UserID uuid.UUID         `json:"user_id"`
+	Role   models.MemberRole `json:"role"`
+}
+
+// publishLeftEvent and publishRoleChangedEvent are shared by LeaveRoom and
+// RemoveMember (kick) below — both trigger the same "someone's active
+// membership just ended" / "someone's role just changed" broadcasts.
+func publishLeftEvent(ctx context.Context, s *store.Store, logger *slog.Logger, roomID, userID uuid.UUID) {
+	payload, err := json.Marshal(leftEvent{Type: "user.left", UserID: userID, RoomID: roomID})
+	if err != nil {
+		logger.Error("marshaling user.left event failed", "room_id", roomID, "user_id", userID, "error", err)
+		return
+	}
+	if err := s.PublishRoomEvent(ctx, roomID, payload); err != nil {
+		logger.Warn("publishing user.left event failed", "room_id", roomID, "user_id", userID, "error", err)
+	}
+}
+
+func publishRoleChangedEvent(ctx context.Context, s *store.Store, logger *slog.Logger, roomID, userID uuid.UUID, role models.MemberRole) {
+	payload, err := json.Marshal(memberRoleChangedEvent{Type: "member.role_changed", RoomID: roomID, UserID: userID, Role: role})
+	if err != nil {
+		logger.Error("marshaling member.role_changed event failed", "room_id", roomID, "user_id", userID, "error", err)
+		return
+	}
+	if err := s.PublishRoomEvent(ctx, roomID, payload); err != nil {
+		logger.Warn("publishing member.role_changed event failed", "room_id", roomID, "user_id", userID, "error", err)
+	}
+}
+
+// LeaveRoom handles POST /api/v1/rooms/{room_id}/leave. On success, publishes
+// user.left (closing a pre-existing gap: this endpoint used to publish
+// nothing, so other members only ever saw a departure via the WS room.leave
+// side-channel or their next refetch) and, if the leaver was the room's last
+// active admin, runs PromoteOldestIfNoAdmins and publishes
+// member.role_changed for whoever got promoted.
+func LeaveRoom(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
@@ -388,6 +513,123 @@ func LeaveRoom(s *store.Store) http.HandlerFunc {
 			return
 		}
 
+		// Membership is already committed at this point, so broadcast hiccups
+		// shouldn't fail the request back to the caller — logged, not fatal,
+		// same philosophy as ToggleReaction's publish step.
+		publishLeftEvent(r.Context(), s, logger, roomID, userID)
+
+		promoted, err := s.PromoteOldestIfNoAdmins(r.Context(), roomID)
+		if err != nil {
+			logger.Error("admin-succession check failed", "room_id", roomID, "error", err)
+		} else if promoted != nil {
+			publishRoleChangedEvent(r.Context(), s, logger, roomID, promoted.UserID, promoted.Role)
+		}
+
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "left"})
+	}
+}
+
+type changeRoleRequest struct {
+	Role string `json:"role"`
+}
+
+// ChangeMemberRole handles PATCH /api/v1/rooms/{room_id}/members/{user_id}/role.
+// Gated by RequireRoomAdmin (registered in the router), so a caller reaching
+// this handler is already confirmed to be an active admin of the room —
+// including the DM case, which RequireRoomAdmin already rejects since a
+// direct room has no admin member at all. A request that changes nothing
+// (target already holds the requested role) succeeds as a no-op without
+// broadcasting; demoting the room's last remaining admin 409s
+// (store.ErrLastAdmin) rather than auto-succeeding — that's what leaving is
+// for.
+func ChangeMemberRole(s *store.Store, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "room_id must be a valid UUID")
+			return
+		}
+		targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "user_id must be a valid UUID")
+			return
+		}
+
+		var req changeRoleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "request body must be valid JSON")
+			return
+		}
+
+		var newRole models.MemberRole
+		switch req.Role {
+		case string(models.RoleAdmin):
+			newRole = models.RoleAdmin
+		case string(models.RoleMember):
+			newRole = models.RoleMember
+		default:
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", errInvalidRole.Error())
+			return
+		}
+
+		changed, err := s.ChangeMemberRole(r.Context(), roomID, targetID, newRole)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "user is not an active member of this room")
+			case errors.Is(err, store.ErrLastAdmin):
+				httpx.WriteError(w, http.StatusConflict, "conflict", "cannot demote the room's last remaining admin")
+			default:
+				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to change member role")
+			}
+			return
+		}
+
+		if changed {
+			publishRoleChangedEvent(r.Context(), s, logger, roomID, targetID, newRole)
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "changed", "role": string(newRole)})
+	}
+}
+
+// RemoveMember handles DELETE /api/v1/rooms/{room_id}/members/{user_id} —
+// kicking a member out of a room. Gated by RequireRoomAdmin. Self-removal
+// via this endpoint is rejected (400): that's what POST .../leave is for,
+// and LeaveRoom's own admin-succession handling only applies to a genuine
+// departure, not a kick. Because the caller is always an admin who isn't
+// removing themselves here, a kick can never zero out a room's admins —
+// unlike LeaveRoom, this never needs PromoteOldestIfNoAdmins.
+func RemoveMember(s *store.Store, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, _ := auth.UserIDFromContext(r.Context())
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "room_id must be a valid UUID")
+			return
+		}
+		targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "user_id must be a valid UUID")
+			return
+		}
+		if targetID == callerID {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "use POST .../leave to remove yourself")
+			return
+		}
+
+		if err := s.RemoveMember(r.Context(), roomID, targetID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "user is not an active member of this room")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to remove member")
+			return
+		}
+
+		publishLeftEvent(r.Context(), s, logger, roomID, targetID)
+
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 	}
 }
