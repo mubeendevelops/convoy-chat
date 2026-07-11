@@ -119,8 +119,8 @@ export function MembersList({ members, roomId, currentUserId, isViewerAdmin }: M
                       <DialogHeader>
                         <DialogTitle>Remove {member.user.username}?</DialogTitle>
                         <DialogDescription>
-                          They&apos;ll be removed from this room immediately and will need a new invite to
-                          rejoin.
+                          They&apos;ll be removed from this room immediately and blocked from rejoining on
+                          their own. An admin can re-invite them later to let them back in.
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>

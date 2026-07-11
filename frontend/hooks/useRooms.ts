@@ -4,7 +4,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { toast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
-import { isValidUuid } from "@/lib/validation";
 import type {
   ChangeRoleResponse,
   CreateRoomRequest,
@@ -15,7 +14,6 @@ import type {
   Room,
   RoomDetail,
   RoomMember,
-  User,
   UserSummary,
 } from "@/lib/types";
 
@@ -99,9 +97,9 @@ export function useJoinChannel() {
   });
 }
 
-// Username-prefix search for the invite picker, backed by GET
-// /users/search. `query` is expected already-debounced by the caller (this is
-// a plain query hook, like useLookupUser) — the queryKey includes it so each
+// Username-prefix search for the invite / DM / group-member pickers, backed by
+// GET /users/search. `query` is expected already-debounced by the caller (a
+// plain query hook) — the queryKey includes it so each
 // distinct debounced value is its own cache entry. Disabled on an empty query
 // so clearing the box doesn't fire a request. `roomId` scopes the search so the
 // backend omits people already in the room; it's part of the key so results
@@ -184,18 +182,5 @@ export function useRemoveMember(roomId: string) {
         description: "Check your connection and try again.",
       });
     },
-  });
-}
-
-// Live preview for the DM peer picker: resolves a pasted user ID to a
-// username before the caller commits to creating the room. Only fires for a
-// syntactically valid UUID — no debounce needed since a pasted ID arrives as
-// one complete value, and a hand-typed one just stays disabled mid-entry.
-export function useLookupUser(userId: string) {
-  return useQuery({
-    queryKey: ["user-lookup", userId],
-    queryFn: () => api.get<User>(`/api/v1/users/${userId}`),
-    enabled: isValidUuid(userId),
-    retry: false,
   });
 }

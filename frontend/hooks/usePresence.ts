@@ -1,23 +1,27 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { usePresenceStore } from "@/lib/presence-store";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import type { PresenceStatus } from "@/lib/types";
+import type { PresenceStatus, UserPresence } from "@/lib/types";
 
 interface PresenceInfo {
   status: PresenceStatus;
   lastSeenAt?: string;
 }
 
-// lib/presence-store.ts only learns another user's status from a live
-// user.status_changed/user.joined event received *after* our socket
-// connected — there's no REST endpoint to fetch current presence (see
-// CLAUDE.md's REST endpoints table), so a member we haven't heard from yet
-// has no entry at all, and defaults to "offline" (the same value they'd show
-// if we *had* heard from them and they were offline).
+// lib/presence-store.ts learns another user's status from a live
+// user.status_changed/user.joined event received *after* our socket connected,
+// or from a room-presence snapshot fetched on room open (useRoomPresence
+// below). Without the snapshot, a member who went online before this session's
+// socket connected would have no entry at all and default to "offline" — the
+// bug this hydration path fixes. A member we still haven't heard from by either
+// route defaults to "offline" (the same value they'd show if we *had* heard
+// from them and they were offline).
 //
 // The current user is a special case: their displayed status comes from
 // selfStatus (the presence store's authoritative record of what they picked
@@ -56,4 +60,38 @@ export function useSelfPresence(): { selfStatus: PresenceStatus; setSelfStatus: 
   );
 
   return { selfStatus, setSelfStatus };
+}
+
+// Hydrates the presence store with a room's members' current statuses when the
+// room opens, via GET /rooms/{id}/presence. This is the authoritative snapshot
+// at open time; live WS events continue to update the store afterward
+// (setStatus is last-write-wins). A benign race exists — a live event landing
+// between the fetch starting and its result being applied could be briefly
+// overwritten by the (now slightly stale) snapshot — but the next live event
+// corrects it, and this only matters in the sub-second window around room open.
+// Meant to be mounted once per room (e.g. ChatWindow, keyed on room.id).
+export function useRoomPresence(roomId: string | undefined): void {
+  const setStatus = usePresenceStore((s) => s.setStatus);
+  const currentUserId = useAuthStore((s) => s.user?.id);
+
+  const { data } = useQuery({
+    queryKey: ["room-presence", roomId],
+    queryFn: () => api.get<UserPresence[]>(`/api/v1/rooms/${roomId}/presence`),
+    enabled: !!roomId,
+    // Presence is high-churn and the live socket keeps it fresh after this
+    // seed; refetching on every focus/remount would just add noise.
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    for (const entry of data) {
+      // Never let the snapshot override the current user's own dot — that's
+      // driven by selfStatus (their chosen intent), not the server echo, which
+      // the backend resets to "online" on every connect (see usePresence).
+      if (entry.user_id === currentUserId) continue;
+      setStatus(entry.user_id, entry.status, entry.last_seen_at);
+    }
+  }, [data, currentUserId, setStatus]);
 }

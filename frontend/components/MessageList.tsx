@@ -128,6 +128,13 @@ export function MessageList({
   // below can restore the scroll offset instead of jumping to the top.
   const prevScrollHeightRef = useRef<number | null>(null);
   const prevMessageCountRef = useRef(0);
+  // Whether the view is currently "stuck" to the bottom. Updated from the
+  // user's own scrolling (handleScroll) so the auto-scroll decision reflects
+  // where they were *before* a new message grew the list, not after — and so
+  // the re-assert effect below can keep pinning to the bottom as the
+  // virtualizer measures real row heights *after* the initial scroll. Starts
+  // true so the first page lands at the bottom.
+  const pinnedToBottomRef = useRef(true);
 
   // Renders only the messages currently in (or near) the viewport — a room's
   // history can grow into the hundreds after a few "load older" pages, and
@@ -172,22 +179,47 @@ export function MessageList({
     }
 
     // Jump to the bottom on the very first page rendered, or whenever the
-    // list grows while the user was already near the bottom (their own
-    // optimistic send, or a live WS push). A user who has scrolled up to
-    // read history is left alone. Total scroll height still comes from the
-    // virtualizer's sized spacer div, so this needs no virtualizer-specific
-    // API — it's the same math as before virtualization.
+    // list grows while the user was already pinned to the bottom (their own
+    // optimistic send, or a live WS push). A user who has scrolled up to read
+    // history is left alone. pinnedToBottomRef reflects where they were
+    // *before* this new row grew scrollHeight (isNearBottom read here would
+    // already count the just-added row's height and mis-decide for a tall
+    // one). Total scroll height still comes from the virtualizer's sized
+    // spacer div. The re-assert effect below then keeps us at the true bottom
+    // once the virtualizer measures the new row's real height.
     const grew = messages.length > prevMessageCountRef.current;
     const wasEmpty = prevMessageCountRef.current === 0;
-    if (grew && (wasEmpty || isNearBottom(el))) {
+    if (grew && (wasEmpty || pinnedToBottomRef.current)) {
       el.scrollTop = el.scrollHeight;
+      pinnedToBottomRef.current = true;
     }
     prevMessageCountRef.current = messages.length;
   }, [messages, isFetchingNextPage]);
 
+  // Re-assert scroll-to-bottom after the virtualizer measures real row heights.
+  // @tanstack/react-virtual measures each row asynchronously (measureElement's
+  // ResizeObserver) *after* the layout effect above has already scrolled using
+  // only ESTIMATED_ROW_HEIGHT, so a fresh row taller than the estimate would
+  // otherwise leave the view landing short of the true bottom. getTotalSize()
+  // changes as those measurements land, re-running this; while pinned we snap
+  // back to the bottom. A user scrolled up (pinned false, set in handleScroll)
+  // is never yanked — which also makes this a no-op during a load-older
+  // prepend, where the main effect's restore branch owns the scroll position.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el || !pinnedToBottomRef.current) return;
+    if (prevScrollHeightRef.current !== null) return;
+    el.scrollTop = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualizer.getTotalSize()]);
+
   function handleScroll() {
     const el = containerRef.current;
-    if (!el || isFetchingNextPage || !hasNextPage) return;
+    if (!el) return;
+    // Track whether the user is riding the bottom, so a live message pins and
+    // scrolling up to read history unpins.
+    pinnedToBottomRef.current = isNearBottom(el);
+    if (isFetchingNextPage || !hasNextPage) return;
     if (el.scrollTop < LOAD_OLDER_THRESHOLD) {
       prevScrollHeightRef.current = el.scrollHeight;
       onLoadOlder();

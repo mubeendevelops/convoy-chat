@@ -118,7 +118,7 @@ func TestSoftDeleteMessage(t *testing.T) {
 		t.Fatalf("InsertMessage: %v", err)
 	}
 
-	if err := s.SoftDeleteMessage(ctx, msg.ID); err != nil {
+	if _, err := s.SoftDeleteMessage(ctx, msg.ID); err != nil {
 		t.Fatalf("SoftDeleteMessage: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestSoftDeleteMessage(t *testing.T) {
 	})
 
 	t.Run("deleting an already-deleted message 404s", func(t *testing.T) {
-		if err := s.SoftDeleteMessage(ctx, msg.ID); !errors.Is(err, store.ErrNotFound) {
+		if _, err := s.SoftDeleteMessage(ctx, msg.ID); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("got error %v, want ErrNotFound", err)
 		}
 	})
@@ -194,7 +194,7 @@ func TestEditMessage(t *testing.T) {
 	})
 
 	t.Run("editing an already-deleted message 404s", func(t *testing.T) {
-		if err := s.SoftDeleteMessage(ctx, msg.ID); err != nil {
+		if _, err := s.SoftDeleteMessage(ctx, msg.ID); err != nil {
 			t.Fatalf("SoftDeleteMessage: %v", err)
 		}
 		if _, err := s.EditMessage(ctx, msg.ID, "should not apply"); !errors.Is(err, store.ErrNotFound) {

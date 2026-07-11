@@ -8,6 +8,7 @@ import { MessageList } from "@/components/MessageList";
 import { RoomHeader } from "@/components/RoomHeader";
 import { TypingIndicator } from "@/components/TypingIndicator";
 import { useDeleteMessage, useEditMessage, useMessages, useSendMessage, useToggleReaction } from "@/hooks/useMessages";
+import { useRoomPresence } from "@/hooks/usePresence";
 import { useTyping } from "@/hooks/useTyping";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { RoomDetail } from "@/lib/types";
@@ -25,6 +26,12 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
   const editMessage = useEditMessage(room.id);
   const { joinRoom, leaveRoom, subscribe } = useWebSocket();
   const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
+
+  // Seed the presence store with this room's members' current statuses on open,
+  // so a peer who went online before this session's socket connected shows
+  // online immediately rather than defaulting to "offline" until the next live
+  // event (see useRoomPresence / usePresence).
+  useRoomPresence(room.id);
 
   // The backend lets a message's author *or* a room admin delete it; the
   // affordance mirrors that. Author is per-message (isOwn in the list); admin

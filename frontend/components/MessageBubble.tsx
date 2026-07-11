@@ -151,7 +151,7 @@ function MessageBubbleComponent({
         <UserPresence userId={message.user.id} className="absolute -bottom-0.5 -right-0.5" />
       </div>
 
-      <div className={cn("flex min-w-0 max-w-[70%] flex-col gap-1", isOwn && "items-end")}>
+      <div className={cn("flex min-w-0 max-w-[70%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
         <div className={cn("flex items-baseline gap-2 px-1", isOwn && "flex-row-reverse")}>
           <span className="truncate text-sm font-medium">{message.user.username}</span>
           <span

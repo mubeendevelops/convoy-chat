@@ -181,7 +181,7 @@ func SendMessage(s *store.Store) http.HandlerFunc {
 // soft delete (deleted_at) — the row is never removed, per the append-only
 // schema — so a subsequent history fetch shows a masked placeholder rather
 // than omitting the message.
-func DeleteMessage(s *store.Store) http.HandlerFunc {
+func DeleteMessage(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
@@ -226,7 +226,8 @@ func DeleteMessage(s *store.Store) http.HandlerFunc {
 			}
 		}
 
-		if err := s.SoftDeleteMessage(r.Context(), messageID); err != nil {
+		deletedAt, err := s.SoftDeleteMessage(r.Context(), messageID)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				httpx.WriteError(w, http.StatusNotFound, "not_found", "message not found")
 				return
@@ -235,8 +236,33 @@ func DeleteMessage(s *store.Store) http.HandlerFunc {
 			return
 		}
 
+		// The delete is already persisted, so a broadcast hiccup shouldn't fail
+		// the request — logged, not fatal, same as EditMessage/ToggleReaction.
+		payload, err := json.Marshal(messageDeletedEvent{
+			Type:      "message.deleted",
+			ID:        messageID,
+			RoomID:    message.RoomID,
+			DeletedAt: deletedAt,
+		})
+		if err != nil {
+			logger.Error("marshaling message.deleted event failed", "message_id", messageID, "error", err)
+		} else if err := s.PublishRoomEvent(r.Context(), message.RoomID, payload); err != nil {
+			logger.Warn("publishing message.deleted event failed", "message_id", messageID, "room_id", message.RoomID, "error", err)
+		}
+
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	}
+}
+
+// messageDeletedEvent matches the WS "message.deleted" shape: {"type","id",
+// "room_id","deleted_at"} — same REST-handler-publishes-directly pattern as
+// messageEditedEvent, so other clients mask the message live instead of only
+// on their next history refetch.
+type messageDeletedEvent struct {
+	Type      string    `json:"type"`
+	ID        uuid.UUID `json:"id"`
+	RoomID    uuid.UUID `json:"room_id"`
+	DeletedAt time.Time `json:"deleted_at"`
 }
 
 type editMessageRequest struct {

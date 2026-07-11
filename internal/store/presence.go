@@ -184,3 +184,58 @@ func (s *Store) ListAllUserPresence(ctx context.Context) ([]models.AdminPresence
 
 	return entries, nil
 }
+
+// ListPresenceForRoom returns the current presence of every active member of
+// roomID, defaulting "offline" for anyone with no live Redis entry — the same
+// one-query-plus-one-MGET shape as ListAllUserPresence, just scoped to a room.
+// Backs GET /rooms/{id}/presence, which lets a client hydrate a peer's status
+// on room open rather than only learning it from a live event received *after*
+// subscribing (the frontend presence store has no other way to know a member
+// who went online before this session's socket connected).
+func (s *Store) ListPresenceForRoom(ctx context.Context, roomID uuid.UUID) ([]models.UserPresence, error) {
+	const q = `
+		SELECT m.user_id, up.last_seen_at
+		FROM room_members m
+		LEFT JOIN user_presence up ON up.user_id = m.user_id
+		WHERE m.room_id = $1 AND m.left_at IS NULL`
+
+	rows, err := s.DB.Query(ctx, q, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("querying room members for presence snapshot: %w", err)
+	}
+
+	entries := make([]models.UserPresence, 0)
+	keys := make([]string, 0)
+	for rows.Next() {
+		var e models.UserPresence
+		if err := rows.Scan(&e.UserID, &e.LastSeenAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning room presence entry: %w", err)
+		}
+		e.Status = models.PresenceOffline
+		entries = append(entries, e)
+		keys = append(keys, presenceStatusKey(e.UserID))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterating room members for presence snapshot: %w", err)
+	}
+	rows.Close()
+
+	if len(keys) == 0 {
+		return entries, nil
+	}
+
+	// MGet preserves key order, so statuses[i] corresponds to entries[i]/keys[i].
+	statuses, err := s.Redis.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("fetching room presence statuses: %w", err)
+	}
+	for i, raw := range statuses {
+		if str, ok := raw.(string); ok && str != "" {
+			entries[i].Status = models.PresenceStatus(str)
+		}
+	}
+
+	return entries, nil
+}

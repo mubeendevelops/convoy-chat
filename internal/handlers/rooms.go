@@ -326,6 +326,30 @@ func ListRoomMembers(s *store.Store) http.HandlerFunc {
 	}
 }
 
+// RoomPresence handles GET /api/v1/rooms/{room_id}/presence: the current
+// presence status of every active member, so a client can hydrate its
+// presence store on room open rather than waiting for a live event. Membership
+// is required (403 for a non-member, also masking a nonexistent room), same as
+// ListRoomMembers — a system admin bypasses it via requireMemberOrSystemAdmin.
+func RoomPresence(s *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+
+		roomID, ok := requireMemberOrSystemAdmin(w, r, s, userID)
+		if !ok {
+			return
+		}
+
+		entries, err := s.ListPresenceForRoom(r.Context(), roomID)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list room presence")
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, entries)
+	}
+}
+
 type inviteRequest struct {
 	UserID string `json:"user_id"`
 }
@@ -441,6 +465,19 @@ func JoinChannel(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 		}
 		if room.Type != models.RoomTypeChannel || !room.IsPublic || room.IsArchived {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden", "this room isn't a joinable public channel")
+			return
+		}
+
+		// A kicked member is banned from rejoining on their own — only an admin
+		// re-invite (which clears the ban via AddMember) can let them back in.
+		// Checked before AddMember, which itself is the ban-lifting path.
+		banned, err := s.IsBanned(r.Context(), roomID, userID)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to check membership")
+			return
+		}
+		if banned {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden", "you have been removed from this channel and can't rejoin")
 			return
 		}
 
@@ -655,7 +692,9 @@ func RemoveMember(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 
-		if err := s.RemoveMember(r.Context(), roomID, targetID); err != nil {
+		// A kick bans the target from self-rejoining (unlike a self-leave). An
+		// admin can still explicitly re-invite them, which lifts the ban.
+		if err := s.BanMember(r.Context(), roomID, targetID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				httpx.WriteError(w, http.StatusNotFound, "not_found", "user is not an active member of this room")
 				return

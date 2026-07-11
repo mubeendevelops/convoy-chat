@@ -142,20 +142,22 @@ func (s *Store) GetMessageByID(ctx context.Context, id uuid.UUID) (*models.Messa
 	return &m, nil
 }
 
-// SoftDeleteMessage sets deleted_at on a message that isn't already deleted.
-// Returns ErrNotFound if the message doesn't exist or was already deleted —
-// messages are never hard-deleted.
-func (s *Store) SoftDeleteMessage(ctx context.Context, id uuid.UUID) error {
-	const q = `UPDATE messages SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL`
+// SoftDeleteMessage sets deleted_at on a message that isn't already deleted and
+// returns the stamped timestamp (so the caller can broadcast message.deleted
+// with the DB truth, mirroring EditMessage returning edited_at). Returns
+// ErrNotFound if the message doesn't exist or was already deleted — messages
+// are never hard-deleted.
+func (s *Store) SoftDeleteMessage(ctx context.Context, id uuid.UUID) (deletedAt time.Time, err error) {
+	const q = `UPDATE messages SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING deleted_at`
 
-	tag, err := s.DB.Exec(ctx, q, id)
+	err = s.DB.QueryRow(ctx, q, id).Scan(&deletedAt)
 	if err != nil {
-		return fmt.Errorf("soft-deleting message: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, ErrNotFound
+		}
+		return time.Time{}, fmt.Errorf("soft-deleting message: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return deletedAt, nil
 }
 
 // EditMessage updates a message's content and stamps edited_at. Mirrors

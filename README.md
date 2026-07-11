@@ -1,18 +1,17 @@
 # ConvoyChat
 
-A Slack-style real-time chat application: a Go API serving REST + WebSocket,
-a Next.js 14 frontend, PostgreSQL for persistence, and Redis for presence
-state and cross-server Pub/Sub broadcast.
+A production-grade, Slack-like real-time chat application: a Go API serving
+REST + WebSocket, a Next.js 14 frontend, PostgreSQL for persistence, and
+Redis for presence state and cross-server Pub/Sub broadcast.
 
 **Features:** JWT auth with refresh-token rotation · channels, groups, and
-direct messages · room & membership management — invite by username search,
-browse and self-join public channels, leave, and admin/member roles
+direct messages · room/member management with admin/member roles
 (promote/demote, kick, admin succession) · a system-admin dashboard
 (system-wide room/presence visibility + message moderation, a separate
 authority from per-room admin) · real-time messaging with persistence and
-history, editing, and deletion · presence (online/away/offline, with a
-manual away toggle) · typing indicators · read receipts · emoji reactions ·
-multi-server broadcast via Redis Pub/Sub.
+history, editing, and deletion · presence (online/away/offline) · typing
+indicators · read receipts · emoji reactions · multi-server broadcast via
+Redis Pub/Sub.
 
 File uploads was considered and decided against — this stays a pure
 text/reaction/read-receipt chat app. See
@@ -51,7 +50,7 @@ internal/store — the only package that touches pgx / go-redis directly
         PUBLISH/SUBSCRIBE on room:{room_id}
 ```
 
-A message send is persisted to Postgres *before* it's broadcast, so history
+A message send is persisted to Postgres _before_ it's broadcast, so history
 is never missing something a connected client already saw. Redis holds
 nothing that can't be lost safely: presence keys expire and self-heal within
 one 15s heartbeat, and idempotency keys just guard a 5-minute retry window —
@@ -78,7 +77,7 @@ Instance 2 (1 local client in #general)   ──┤  has ≥1 local client in th
                      deliver to their own local clients — never each other's
 ```
 
-Subscribing is synchronous and confirmed *before* a joining client's
+Subscribing is synchronous and confirmed _before_ a joining client's
 `user.joined` is published (Redis `PUBLISH` silently drops to a channel with
 no live subscriber, so publishing first would lose the joiner's own event).
 Unsubscribing on a room's last local leave is fire-and-forget — a late
@@ -89,17 +88,17 @@ never loses anything.
 
 **Backend** — Go 1.25, module `github.com/mubeendevelops/convoy-chat`:
 
-| Library | Version |
-|---|---|
-| github.com/go-chi/chi/v5 | v5.3.0 |
-| github.com/gorilla/websocket | v1.5.3 |
-| github.com/redis/go-redis/v9 | v9.21.0 |
-| github.com/jackc/pgx/v5 | v5.10.0 |
-| github.com/google/uuid | v1.6.0 |
-| github.com/golang-jwt/jwt/v5 | v5.3.1 |
-| golang.org/x/crypto (bcrypt) | v0.53.0 |
+| Library                              | Version |
+| ------------------------------------ | ------- |
+| github.com/go-chi/chi/v5             | v5.3.0  |
+| github.com/gorilla/websocket         | v1.5.3  |
+| github.com/redis/go-redis/v9         | v9.21.0 |
+| github.com/jackc/pgx/v5              | v5.10.0 |
+| github.com/google/uuid               | v1.6.0  |
+| github.com/golang-jwt/jwt/v5         | v5.3.1  |
+| golang.org/x/crypto (bcrypt)         | v0.53.0 |
 | github.com/golang-migrate/migrate/v4 | v4.19.1 |
-| github.com/go-chi/cors | v1.2.2 |
+| github.com/go-chi/cors               | v1.2.2  |
 
 **Frontend** — Next.js 14.2.35 (App Router), React 18.3.x, TypeScript ~5.9,
 Tailwind CSS 3.4.19, shadcn/ui, @tanstack/react-query 5.101.2,
@@ -227,23 +226,23 @@ container's internal port is still 5432). Remap freely in
 
 **Backend** (`.env` — see `.env.example`):
 
-| Var | Default (dev) | Purpose |
-|---|---|---|
-| `PORT` | `8080` | HTTP listen port |
-| `APP_ENV` | `development` | `development` \| `production` (switches structured logging to JSON) |
-| `DATABASE_URL` | — (required) | pgx pool DSN, e.g. `postgres://convoy:convoy@localhost:5433/convoychat?sslmode=disable` |
-| `REDIS_URL` | — (required) | e.g. `redis://localhost:6379/0` |
-| `JWT_SECRET` | — (required) | HS256 signing secret, 32+ chars; server refuses to boot without it |
-| `JWT_TTL` | `15m` | Access-token lifetime — short, since refresh tokens cover staying signed in beyond it |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated; also gates the WebSocket `Origin` check |
-| `MIGRATIONS_PATH` | `migrations` | Only read by `-migrate` mode; relative to the working directory |
+| Var                    | Default (dev)           | Purpose                                                                                 |
+| ---------------------- | ----------------------- | --------------------------------------------------------------------------------------- |
+| `PORT`                 | `8080`                  | HTTP listen port                                                                        |
+| `APP_ENV`              | `development`           | `development` \| `production` (switches structured logging to JSON)                     |
+| `DATABASE_URL`         | — (required)            | pgx pool DSN, e.g. `postgres://convoy:convoy@localhost:5433/convoychat?sslmode=disable` |
+| `REDIS_URL`            | — (required)            | e.g. `redis://localhost:6379/0`                                                         |
+| `JWT_SECRET`           | — (required)            | HS256 signing secret, 32+ chars; server refuses to boot without it                      |
+| `JWT_TTL`              | `15m`                   | Access-token lifetime — short, since refresh tokens cover staying signed in beyond it   |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated; also gates the WebSocket `Origin` check                                |
+| `MIGRATIONS_PATH`      | `migrations`            | Only read by `-migrate` mode; relative to the working directory                         |
 
 **Frontend** (`frontend/.env.local` — see `frontend/.env.example`):
 
-| Var | Default (dev) | Purpose |
-|---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | REST base URL |
-| `NEXT_PUBLIC_WS_URL` | `ws://localhost:8080/ws` | WebSocket URL (`wss://` in production — a browser on an `https://` page blocks a plain `ws://` connection as mixed content) |
+| Var                   | Default (dev)            | Purpose                                                                                                                     |
+| --------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080`  | REST base URL                                                                                                               |
+| `NEXT_PUBLIC_WS_URL`  | `ws://localhost:8080/ws` | WebSocket URL (`wss://` in production — a browser on an `https://` page blocks a plain `ws://` connection as mixed content) |
 
 Production values for both, plus the managed Postgres/Redis and Vercel
 setup, are in [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -255,32 +254,29 @@ Base path `/api/v1` unless noted. Every error response uses one JSON shape:
 (400), `unauthorized` (401), `forbidden` (403), `not_found` (404),
 `conflict` (409), `internal_error` (500).
 
-| Method | Path | Auth | Notes |
-|---|---|---|---|
-| POST | `/auth/signup` | none | 201 `{token, refresh_token, user}`; 400 `invalid_input`, 409 `conflict` (username/email taken) |
-| POST | `/auth/login` | none | 200 `{token, refresh_token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration) |
-| POST | `/auth/refresh` | refresh token (body), no Bearer | `{refresh_token}` → 200 `{token, refresh_token, user}`; rotates (old token revoked, new one issued in the same session family); 401 on a bogus/expired/already-rotated-out token — replaying an already-rotated-out token also revokes every other token in its family |
-| POST | `/auth/logout` | Bearer JWT | `{refresh_token}` → 200 `{"status":"logged_out"}`; revokes the presented token's whole session family; a missing/unknown/already-revoked token is a no-op 200, not an error |
-| GET | `/users/search` | Bearer JWT | `?q=<username-prefix>&room_id=<uuid>` → up to 20 users by case-insensitive username prefix; excludes you and (when `room_id` is given) that room's active members. Backs the invite and group-creation pickers |
-| GET | `/users/{user_id}` | Bearer JWT | 200 user; 400 (bad UUID), 404 |
-| POST | `/rooms` | Bearer JWT | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair); `{"type":"group","name","description","member_ids":[...]}` → 201, ≥2 `member_ids` required, always private |
-| GET | `/rooms` | Bearer JWT | rooms the caller actively belongs to |
-| GET | `/rooms/public` | Bearer JWT | public, non-archived channels you're not already in, each with a `member_count`; backs the "browse channels" list |
-| GET | `/rooms/{room_id}` | Bearer JWT | room + embedded `members[]`; 403 if not an active member and not a system admin (also covers a nonexistent room, so room IDs can't be enumerated) |
-| GET | `/rooms/{room_id}/members` | Bearer JWT | same 403 rule as above |
-| POST | `/rooms/{room_id}/invite` | Bearer JWT, admin only | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member |
-| POST | `/rooms/{room_id}/join` | Bearer JWT | self-join a public channel → 201 membership; 403 if the room is missing/private/not a channel (so IDs can't be probed), 409 if already a member; publishes `user.joined` live |
-| POST | `/rooms/{room_id}/leave` | Bearer JWT | 200 `{"status":"left"}`; 404 if not currently a member; publishes `user.left` live and runs admin succession if the leaver was the room's last admin |
-| PATCH | `/rooms/{room_id}/members/{user_id}/role` | Bearer JWT, admin only | `{"role":"admin"\|"member"}` → 200; idempotent; publishes `member.role_changed` live; 404 non-member target, 409 demoting the room's last admin |
-| DELETE | `/rooms/{room_id}/members/{user_id}` | Bearer JWT, admin only | 200 `{"status":"removed"}` — kicks the target; publishes `user.left` live; 400 on self-removal (use `.../leave`), 404 non-member target |
-| GET | `/rooms/{room_id}/messages` | Bearer JWT | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member |
-| POST | `/rooms/{room_id}/messages` | Bearer JWT | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes |
-| PATCH | `/messages/{message_id}` | Bearer JWT | `{"content"}` → 200 `{id, room_id, content, edited_at}`; **author-only, no admin override**; publishes `message.edited` live over WebSocket; 404 if nonexistent/already deleted, 403 if not the author |
-| DELETE | `/messages/{message_id}` | Bearer JWT | 200 `{"status":"deleted"}`; author, room admin, or system admin; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted |
-| GET | `/admin/rooms` | Bearer JWT, system admin only | `?limit=&offset=` → every room in the system regardless of the caller's own membership; 403 if not a system admin |
-| GET | `/admin/presence` | Bearer JWT, system admin only | every registered user's current presence status, defaulting `offline`; 403 if not a system admin |
-| POST | `/messages/{message_id}/reactions` | Bearer JWT | `{"emoji"}` toggles: 201 `added` / 200 `removed`; publishes `message.reaction` live over WebSocket; 404 if the message is nonexistent or deleted |
-| GET | `/health` | none | `{"postgres":"ok","redis":"ok"}`, 503 if either dependency is down |
+| Method | Path                                      | Auth                            | Notes                                                                                                                                                                                                                                                                  |
+| ------ | ----------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/auth/signup`                            | none                            | 201 `{token, refresh_token, user}`; 400 `invalid_input`, 409 `conflict` (username/email taken)                                                                                                                                                                         |
+| POST   | `/auth/login`                             | none                            | 200 `{token, refresh_token, user}`; 401 `unauthorized` (identical message for bad email or bad password — no user enumeration)                                                                                                                                         |
+| POST   | `/auth/refresh`                           | refresh token (body), no Bearer | `{refresh_token}` → 200 `{token, refresh_token, user}`; rotates (old token revoked, new one issued in the same session family); 401 on a bogus/expired/already-rotated-out token — replaying an already-rotated-out token also revokes every other token in its family |
+| POST   | `/auth/logout`                            | Bearer JWT                      | `{refresh_token}` → 200 `{"status":"logged_out"}`; revokes the presented token's whole session family; a missing/unknown/already-revoked token is a no-op 200, not an error                                                                                            |
+| GET    | `/users/{user_id}`                        | Bearer JWT                      | 200 user; 400 (bad UUID), 404                                                                                                                                                                                                                                          |
+| POST   | `/rooms`                                  | Bearer JWT                      | `{"type":"channel","name","description"}` → 201; `{"type":"direct","peer_user_id"}` → 201 if new, 200 if it already existed (deduped per user pair); `{"type":"group","name","description","member_ids":[...]}` → 201, ≥2 `member_ids` required, always private        |
+| GET    | `/rooms`                                  | Bearer JWT                      | rooms the caller actively belongs to                                                                                                                                                                                                                                   |
+| GET    | `/rooms/{room_id}`                        | Bearer JWT                      | room + embedded `members[]`; 403 if not an active member and not a system admin (also covers a nonexistent room, so room IDs can't be enumerated)                                                                                                                      |
+| GET    | `/rooms/{room_id}/members`                | Bearer JWT                      | same 403 rule as above                                                                                                                                                                                                                                                 |
+| POST   | `/rooms/{room_id}/invite`                 | Bearer JWT, admin only          | `{"user_id"}`; 403 non-admin (every caller on a `direct` room, by design — a DM has no admin), 404 unknown user, 409 already an active member                                                                                                                          |
+| POST   | `/rooms/{room_id}/leave`                  | Bearer JWT                      | 200 `{"status":"left"}`; 404 if not currently a member; publishes `user.left` live and runs admin succession if the leaver was the room's last admin                                                                                                                   |
+| PATCH  | `/rooms/{room_id}/members/{user_id}/role` | Bearer JWT, admin only          | `{"role":"admin"\|"member"}` → 200; idempotent; publishes `member.role_changed` live; 404 non-member target, 409 demoting the room's last admin                                                                                                                        |
+| DELETE | `/rooms/{room_id}/members/{user_id}`      | Bearer JWT, admin only          | 200 `{"status":"removed"}` — kicks the target; publishes `user.left` live; 400 on self-removal (use `.../leave`), 404 non-member target                                                                                                                                |
+| GET    | `/rooms/{room_id}/messages`               | Bearer JWT                      | `?limit=50&before=<created_at>` keyset pagination, newest-first; each message embeds `read_by[]` and `reactions[]` (grouped by emoji); 403 if not a member                                                                                                             |
+| POST   | `/rooms/{room_id}/messages`               | Bearer JWT                      | `{"content","message_type"?}` → 201; REST fallback send used when the WebSocket is down; optional `Idempotency-Key` header, 409 on reuse within 5 minutes                                                                                                              |
+| PATCH  | `/messages/{message_id}`                  | Bearer JWT                      | `{"content"}` → 200 `{id, room_id, content, edited_at}`; **author-only, no admin override**; publishes `message.edited` live over WebSocket; 404 if nonexistent/already deleted, 403 if not the author                                                                 |
+| DELETE | `/messages/{message_id}`                  | Bearer JWT                      | 200 `{"status":"deleted"}`; author, room admin, or system admin; soft-delete (`deleted_at` set, `content` nulled in the API response, never removed from the row); 404 if already deleted                                                                              |
+| GET    | `/admin/rooms`                            | Bearer JWT, system admin only   | `?limit=&offset=` → every room in the system regardless of the caller's own membership; 403 if not a system admin                                                                                                                                                      |
+| GET    | `/admin/presence`                         | Bearer JWT, system admin only   | every registered user's current presence status, defaulting `offline`; 403 if not a system admin                                                                                                                                                                       |
+| POST   | `/messages/{message_id}/reactions`        | Bearer JWT                      | `{"emoji"}` toggles: 201 `added` / 200 `removed`; publishes `message.reaction` live over WebSocket; 404 if the message is nonexistent or deleted                                                                                                                       |
+| GET    | `/health`                                 | none                            | `{"postgres":"ok","redis":"ok"}`, 503 if either dependency is down                                                                                                                                                                                                     |
 
 ## WebSocket API
 
@@ -379,10 +375,3 @@ backups, rate limiting, graceful shutdown).
   an oversight — the refresh token's rotation-with-reuse-detection design
   (see `plan.md`) bounds how long a stolen one stays useful, rather than
   preventing theft outright.
-- Starting a DM still means pasting the peer's exact user ID (`CreateRoomDialog`'s
-  direct-message tab never got migrated to the username-search picker that
-  invite and group-creation already use — a known, tracked follow-up, not an
-  oversight). There's also no way to fetch a user's *current* presence on
-  demand; presence is learned only from live events received after your
-  socket connects (a teammate nobody's "heard from" this session shows as
-  offline until they do something).

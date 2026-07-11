@@ -9,6 +9,7 @@ import {
   addReadReceipt,
   applyEdit,
   applyReaction,
+  markDeleted,
   messagesQueryKey,
   newestConfirmedCreatedAt,
   PAGE_SIZE,
@@ -255,6 +256,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           // just now with the server's authoritative edited_at.
           queryClient.setQueryData<MessagesData>(messagesQueryKey(event.room_id), (old) =>
             applyEdit(old, event.id, event.content, event.edited_at),
+          );
+          break;
+        case "message.deleted":
+          // Carries a room_id (like message.edited), so it targets that room's
+          // cache directly rather than broad-applying. Closes the previously
+          // documented gap where a delete only reached other clients on their
+          // next refetch/resync. markDeleted no-ops if already masked, so the
+          // deleter's own client re-applying is harmless.
+          queryClient.setQueryData<MessagesData>(messagesQueryKey(event.room_id), (old) =>
+            markDeleted(old, event.id, event.deleted_at),
           );
           break;
         case "member.role_changed":

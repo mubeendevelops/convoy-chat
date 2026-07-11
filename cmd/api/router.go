@@ -66,6 +66,7 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 			r.Get("/rooms/public", handlers.ListPublicChannels(st))
 			r.Get("/rooms/{room_id}", handlers.GetRoom(st))
 			r.Get("/rooms/{room_id}/members", handlers.ListRoomMembers(st))
+			r.Get("/rooms/{room_id}/presence", handlers.RoomPresence(st))
 			r.Post("/rooms/{room_id}/invite", handlers.InviteMember(st))
 			r.Post("/rooms/{room_id}/join", handlers.JoinChannel(st, logger))
 			r.Post("/rooms/{room_id}/leave", handlers.LeaveRoom(st, logger))
@@ -75,7 +76,7 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 			r.Get("/rooms/{room_id}/messages", handlers.ListMessages(st))
 			r.Post("/rooms/{room_id}/messages", handlers.SendMessage(st))
 			r.Patch("/messages/{message_id}", handlers.EditMessage(st, logger))
-			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st))
+			r.Delete("/messages/{message_id}", handlers.DeleteMessage(st, logger))
 			r.Post("/messages/{message_id}/reactions", handlers.ToggleReaction(st, logger))
 
 			r.With(handlers.RequireSystemAdmin(st)).Get("/admin/rooms", handlers.ListAllRooms(st))

@@ -453,13 +453,16 @@ func (s *Store) ListMembers(ctx context.Context, roomID uuid.UUID) ([]models.Roo
 // AddMember adds userID to roomID with the given role. If userID previously
 // left the room, they're reactivated (fresh joined_at, left_at cleared, role
 // updated to the given role). If userID is already an active member,
-// ErrAlreadyMember is returned.
+// ErrAlreadyMember is returned. This is also the ban-lifting path: an admin
+// re-inviting a previously-kicked user clears banned_at, since inviting is a
+// deliberate "let them back in" action (a banned user's own self-join is
+// blocked separately, by JoinChannel's IsBanned pre-check — see CLAUDE.md).
 func (s *Store) AddMember(ctx context.Context, roomID, userID uuid.UUID, role models.MemberRole) (*models.RoomMember, error) {
 	const q = `
 		INSERT INTO room_members (id, room_id, user_id, role)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (room_id, user_id) DO UPDATE
-			SET role = EXCLUDED.role, joined_at = NOW(), left_at = NULL
+			SET role = EXCLUDED.role, joined_at = NOW(), left_at = NULL, banned_at = NULL
 			WHERE room_members.left_at IS NOT NULL
 		RETURNING id, room_id, user_id, role, joined_at, left_at`
 
@@ -477,7 +480,8 @@ func (s *Store) AddMember(ctx context.Context, roomID, userID uuid.UUID, role mo
 }
 
 // RemoveMember marks userID as having left roomID. Returns ErrNotFound if
-// they weren't currently an active member.
+// they weren't currently an active member. Used for a self-leave (leaving is
+// not a ban); a kick uses BanMember instead.
 func (s *Store) RemoveMember(ctx context.Context, roomID, userID uuid.UUID) error {
 	const q = `
 		UPDATE room_members
@@ -494,6 +498,43 @@ func (s *Store) RemoveMember(ctx context.Context, roomID, userID uuid.UUID) erro
 	return nil
 }
 
+// BanMember marks userID as having left roomID *and* bans them, so they can't
+// self-join back in (JoinChannel's IsBanned pre-check blocks it) — used by the
+// admin kick path. An admin re-invite (AddMember) lifts the ban. Returns
+// ErrNotFound if they weren't currently an active member. Mirrors
+// RemoveMember's WHERE left_at IS NULL idiom.
+func (s *Store) BanMember(ctx context.Context, roomID, userID uuid.UUID) error {
+	const q = `
+		UPDATE room_members
+		SET left_at = NOW(), banned_at = NOW()
+		WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL`
+
+	tag, err := s.DB.Exec(ctx, q, roomID, userID)
+	if err != nil {
+		return fmt.Errorf("banning room member: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// IsBanned reports whether userID has a banned row in roomID (a kicked member
+// who hasn't been re-invited). Backs JoinChannel's self-join pre-check.
+func (s *Store) IsBanned(ctx context.Context, roomID, userID uuid.UUID) (bool, error) {
+	const q = `
+		SELECT EXISTS (
+			SELECT 1 FROM room_members
+			WHERE room_id = $1 AND user_id = $2 AND banned_at IS NOT NULL
+		)`
+
+	var banned bool
+	if err := s.DB.QueryRow(ctx, q, roomID, userID).Scan(&banned); err != nil {
+		return false, fmt.Errorf("checking member ban: %w", err)
+	}
+	return banned, nil
+}
+
 // ListPublicChannels returns public, non-archived channels excludeUserID is
 // not currently an active member of, each with its active member count,
 // newest first. Backs the browse-channels list (GET /rooms/public).
@@ -507,6 +548,10 @@ func (s *Store) ListPublicChannels(ctx context.Context, excludeUserID uuid.UUID)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM room_members me
 		      WHERE me.room_id = r.id AND me.user_id = $1 AND me.left_at IS NULL
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM room_members b
+		      WHERE b.room_id = r.id AND b.user_id = $1 AND b.banned_at IS NOT NULL
 		  )
 		GROUP BY r.id
 		ORDER BY r.created_at DESC`
