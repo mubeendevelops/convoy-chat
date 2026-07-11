@@ -62,9 +62,9 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
 
   return (
     <header className="flex items-center justify-between gap-4 border-b px-3 py-4 md:px-6">
-      <div className="flex min-w-0 items-center gap-1 md:gap-3">
+      <div className="flex min-w-0 flex-1 items-center gap-1 md:gap-3">
         <MobileSidebarTrigger />
-        <h1 className="truncate text-lg font-semibold">{displayName}</h1>
+        <h1 className="min-w-0 truncate text-lg font-semibold">{displayName}</h1>
         <Badge variant="secondary" className="hidden shrink-0 sm:inline-flex">
           {roomTypeLabel(room.type)}
         </Badge>

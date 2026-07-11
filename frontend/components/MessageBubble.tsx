@@ -45,6 +45,11 @@ interface MessageBubbleProps {
    * author-only with no admin override (see CLAUDE.md) — isOwn alone gates
    * the affordance, isRoomAdmin never does. */
   onEdit?: (messageId: string, content: string) => void;
+  /** True only for the single most-recent own message that's been read.
+   * The "Read" indicator shows just on that one message (implying every
+   * earlier own message was read too, Slack/WhatsApp style) rather than
+   * repeating under every bubble — MessageList decides which one it is. */
+  showReadReceipt?: boolean;
 }
 
 // Locked design decision: every message gets its own full header (avatar +
@@ -62,8 +67,20 @@ function MessageBubbleComponent({
   isRoomAdmin,
   onDelete,
   onEdit,
+  showReadReceipt,
 }: MessageBubbleProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Touch has no hover, so the desktop group-hover reveal can't apply — a
+  // finger can't rest over an element, and browsers that fake hover-on-
+  // first-tap just turn it into a confusing double-tap. Tapping the bubble
+  // itself (see the message content div's onClick below) is the mobile
+  // equivalent trigger, toggling the same toolbar that hover shows on
+  // desktop, mirroring pickerOpen's existing show/hide-on-tap pattern.
+  // (Unconditionally showing the toolbar in flow, the previous behavior,
+  // both defeated the "hidden until wanted" point of it and, being a
+  // block-level flex container once static, stretched to the bubble's full
+  // width instead of hugging its own content.)
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -71,10 +88,12 @@ function MessageBubbleComponent({
   const isDeleted = !!message.deleted_at;
   const isSending = message.status === "sending";
   const isFailed = message.status === "failed";
-  // Locked (asked, Phase 14): per-message checkmark once at least one other
-  // member has read it — read_by is only meaningful once the message is a
-  // real, confirmed row (an optimistic/failed bubble's read_by is always []).
-  const isRead = isOwn && !message.status && message.read_by.length > 0;
+  // A "Read" checkmark once at least one other member has read it — read_by is
+  // only meaningful on a real, confirmed row (an optimistic/failed bubble's
+  // read_by is always []). Only the most-recent read own message actually
+  // shows it (showReadReceipt, decided by MessageList), so the indicator isn't
+  // repeated under every bubble — see MessageBubbleProps.showReadReceipt.
+  const isRead = isOwn && !message.status && message.read_by.length > 0 && !!showReadReceipt;
   // A deleted message 404s on react (mirrors the backend's already-deleted
   // idiom, see CLAUDE.md); a still-optimistic/failed bubble's id is a client
   // nonce, not a real message id yet, so reacting to one would 404 too.
@@ -104,6 +123,7 @@ function MessageBubbleComponent({
   function toggle(emoji: string) {
     onToggleReaction?.(message.id, emoji);
     setPickerOpen(false);
+    setMobileActionsOpen(false);
   }
 
   function confirmDelete() {
@@ -114,6 +134,7 @@ function MessageBubbleComponent({
   function startEdit() {
     setEditContent(message.content ?? "");
     setIsEditing(true);
+    setMobileActionsOpen(false);
   }
 
   function cancelEdit() {
@@ -142,7 +163,7 @@ function MessageBubbleComponent({
   }
 
   return (
-    <div className={cn("flex items-start gap-3", isOwn && "flex-row-reverse")} data-message-id={message.id}>
+    <div className={cn("group flex items-start gap-3", isOwn && "flex-row-reverse")} data-message-id={message.id}>
       <div className="relative shrink-0">
         <Avatar className="h-9 w-9">
           {message.user.avatar_url && <AvatarImage src={message.user.avatar_url} alt={message.user.username} />}
@@ -193,22 +214,135 @@ function MessageBubbleComponent({
             </div>
           </div>
         ) : (
-          <div
-            className={cn(
-              "whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm",
-              isDeleted
-                ? "bg-muted italic text-muted-foreground"
-                : isOwn
-                  ? "bg-bubble-outgoing text-bubble-outgoing-foreground"
-                  : "bg-bubble-incoming text-bubble-incoming-foreground",
-              isSending && "opacity-60",
+          <div className="relative">
+            <div
+              onClick={canReact ? () => setMobileActionsOpen((v) => !v) : undefined}
+              className={cn(
+                "w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm",
+                // Without an explicit width, a block box like this one
+                // normally fills 100% of its container rather than sizing to
+                // its own content — invisible as long as this bubble is the
+                // widest thing in `relative`'s box, but once the mobile
+                // toolbar below opens and is wider than a short message
+                // (e.g. "hi"), `relative`'s shrink-to-fit width grows to
+                // match the toolbar, and without w-fit this bubble would
+                // stretch to fill that now-wider box instead of staying
+                // sized to its own text — the reported padding-spans-the-
+                // toolbar bug. ml-auto re-pins an own message to the right
+                // edge of that wider box (mirrors the toolbar's own
+                // max-md:ml-auto below) — otherwise a block box narrower
+                // than its container sits at the left (LTR) by default,
+                // which would misalign a right-side/own bubble.
+                isOwn && "ml-auto",
+                isDeleted
+                  ? "bg-muted italic text-muted-foreground"
+                  : isOwn
+                    ? "bg-bubble-outgoing text-bubble-outgoing-foreground"
+                    : "bg-bubble-incoming text-bubble-incoming-foreground",
+                isSending && "opacity-60",
+                canReact && "max-md:cursor-pointer",
+              )}
+            >
+              {isDeleted ? "This message was deleted" : message.content}
+            </div>
+
+            {canReact && (
+              // Floating action toolbar. On desktop it stays hidden until the
+              // message is hovered/focused and sits in the gutter beside the
+              // bubble, so it reserves no vertical space and consecutive
+              // messages stack tightly. Touch has no hover to mirror — a
+              // finger can't rest over an element the way a cursor can, and
+              // browsers that fake hover-on-first-tap just turn it into a
+              // confusing double-tap — so on touch (max-md) tapping the
+              // bubble itself (see onClick above) is the equivalent trigger:
+              // it toggles the same toolbar into normal flow below the
+              // bubble (there's rarely gutter room for the whole toolbar on
+              // a narrow phone), hugging its own content width
+              // (max-md:w-fit) rather than stretching block-level to the
+              // bubble's full width, and hidden until tapped rather than
+              // always occupying space.
+              <div
+                className={cn(
+                  "z-10 flex items-center gap-0.5 rounded-full border bg-popover px-1 py-0.5 shadow-sm transition-opacity",
+                  "absolute top-1/2 -translate-y-1/2",
+                  isOwn ? "right-full mr-1" : "left-full ml-1",
+                  "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+                  pickerOpen && "pointer-events-auto opacity-100",
+                  mobileActionsOpen
+                    ? cn(
+                        "max-md:pointer-events-auto max-md:static max-md:mt-1 max-md:w-fit max-md:translate-y-0 max-md:opacity-100",
+                        isOwn && "max-md:ml-auto",
+                      )
+                    : "max-md:hidden",
+                )}
+              >
+                {pickerOpen &&
+                  QUICK_REACTIONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => toggle(emoji)}
+                      aria-label={`React with ${emoji}`}
+                      className="rounded-full p-1 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  aria-pressed={pickerOpen}
+                  aria-label="Add reaction"
+                  className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <SmilePlus className="h-3.5 w-3.5" />
+                </button>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={startEdit}
+                    aria-label="Edit message"
+                    className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                {canDelete && (
+                  <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+                    <DialogTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Delete message"
+                        className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Delete message?</DialogTitle>
+                        <DialogDescription>
+                          This can&apos;t be undone. The message will be replaced with a &ldquo;message
+                          deleted&rdquo; placeholder.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <DialogFooter>
+                        <Button type="button" variant="outline" onClick={() => setConfirmDeleteOpen(false)}>
+                          Cancel
+                        </Button>
+                        <Button type="button" variant="destructive" onClick={confirmDelete}>
+                          Delete
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                )}
+              </div>
             )}
-          >
-            {isDeleted ? "This message was deleted" : message.content}
           </div>
         )}
 
-        {canReact && !isEditing && (
+        {canReact && !isEditing && message.reactions.length > 0 && (
           <div className={cn("flex flex-wrap items-center gap-1 px-1", isOwn && "flex-row-reverse")}>
             {message.reactions.map((r) => {
               const mine = r.user_ids.includes(currentUserId);
@@ -229,70 +363,6 @@ function MessageBubbleComponent({
                 </button>
               );
             })}
-            <button
-              type="button"
-              onClick={() => setPickerOpen((v) => !v)}
-              aria-pressed={pickerOpen}
-              aria-label="Add reaction"
-              className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <SmilePlus className="h-3.5 w-3.5" />
-            </button>
-            {pickerOpen && (
-              <div className="flex items-center gap-0.5 rounded-full border bg-popover px-1 py-0.5 shadow-sm">
-                {QUICK_REACTIONS.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => toggle(emoji)}
-                    aria-label={`React with ${emoji}`}
-                    className="rounded-full p-1 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-            )}
-            {canEdit && (
-              <button
-                type="button"
-                onClick={startEdit}
-                aria-label="Edit message"
-                className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {canDelete && (
-              <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
-                <DialogTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Delete message"
-                    className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Delete message?</DialogTitle>
-                    <DialogDescription>
-                      This can&apos;t be undone. The message will be replaced with a &ldquo;message
-                      deleted&rdquo; placeholder.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <DialogFooter>
-                    <Button type="button" variant="outline" onClick={() => setConfirmDeleteOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button type="button" variant="destructive" onClick={confirmDelete}>
-                      Delete
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            )}
           </div>
         )}
 

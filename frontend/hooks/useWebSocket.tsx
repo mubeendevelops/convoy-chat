@@ -98,12 +98,62 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     return false;
   }, []);
 
+  // Backfill messages missed while this room wasn't actively joined —
+  // reused for two distinct gaps: the socket dropping and reconnecting (see
+  // the isReconnect branch in the connect effect below), and a room simply
+  // being closed and reopened while the socket stayed up the whole time.
+  // The latter is the more common case in practice (switching between DMs/
+  // channels) and was the actual missing piece: ChatWindow's join on mount
+  // only sent room.join and otherwise relied on useMessages' own
+  // useInfiniteQuery fetch, but that query's cache carries a 60s staleTime
+  // (see app/providers.tsx), so re-opening a room within that window served
+  // the stale cached page with nothing newer — the room's Hub-side
+  // subscription was dropped on leave, so no message.new for it arrived
+  // while it was closed, and the query had no reason to refetch on remount.
+  // Anchored on the newest *confirmed* message we hold; pages backward
+  // (reusing keyset pagination) until it overlaps that anchor, then merges —
+  // deduped by id, preserving local optimistic/failed bubbles (see
+  // upsertMessages). A no-op when nothing is cached yet (a room's first-ever
+  // open), since the initial query fetch already covers that case.
+  const resyncRoom = useCallback(
+    async (roomId: string) => {
+      const existing = queryClient.getQueryData<MessagesData>(messagesQueryKey(roomId));
+      const lastSeen = newestConfirmedCreatedAt(existing);
+      if (!lastSeen) return; // nothing loaded to anchor on — the initial query covers it
+
+      const collected: ChatMessage[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < MAX_RESYNC_PAGES; i++) {
+        const page = await api.get<MessageWithAuthor[]>(
+          `/api/v1/rooms/${roomId}/messages?limit=${PAGE_SIZE}` +
+            (cursor ? `&before=${encodeURIComponent(cursor)}` : ""),
+        );
+        collected.push(...page);
+        const oldest = page[page.length - 1];
+        if (page.length < PAGE_SIZE) break; // reached the start of history
+        if (!oldest || oldest.created_at <= lastSeen) break; // overlapped what we hold
+        cursor = oldest.created_at;
+      }
+      if (collected.length === 0) return;
+
+      const currentUserId = useAuthStore.getState().user?.id ?? "";
+      const incoming: IncomingMessage[] = collected.map((message) => ({ message }));
+      queryClient.setQueryData<MessagesData>(messagesQueryKey(roomId), (old) =>
+        upsertMessages(old, incoming, currentUserId),
+      );
+    },
+    [queryClient],
+  );
+
   const joinRoom = useCallback(
     (roomId: string) => {
       joinedRoomsRef.current.add(roomId);
       send({ type: "room.join", room_id: roomId });
+      // Catch up on anything sent while this room was closed (see
+      // resyncRoom's comment) — cheap no-op when there's nothing cached yet.
+      void resyncRoom(roomId);
     },
-    [send],
+    [send, resyncRoom],
   );
 
   const leaveRoom = useCallback(
@@ -290,40 +340,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       subscribersRef.current.get(event.type)?.forEach((listener) => listener(event));
     },
     [queryClient, leaveRoom],
-  );
-
-  // Backfill messages missed while the socket was down. Anchored on the newest
-  // *confirmed* message we hold; pages backward (reusing keyset pagination)
-  // until it overlaps that anchor, then merges — deduped by id, preserving
-  // local optimistic/failed bubbles (see upsertMessages).
-  const resyncRoom = useCallback(
-    async (roomId: string) => {
-      const existing = queryClient.getQueryData<MessagesData>(messagesQueryKey(roomId));
-      const lastSeen = newestConfirmedCreatedAt(existing);
-      if (!lastSeen) return; // nothing loaded to anchor on — the initial query covers it
-
-      const collected: ChatMessage[] = [];
-      let cursor: string | undefined;
-      for (let i = 0; i < MAX_RESYNC_PAGES; i++) {
-        const page = await api.get<MessageWithAuthor[]>(
-          `/api/v1/rooms/${roomId}/messages?limit=${PAGE_SIZE}` +
-            (cursor ? `&before=${encodeURIComponent(cursor)}` : ""),
-        );
-        collected.push(...page);
-        const oldest = page[page.length - 1];
-        if (page.length < PAGE_SIZE) break; // reached the start of history
-        if (!oldest || oldest.created_at <= lastSeen) break; // overlapped what we hold
-        cursor = oldest.created_at;
-      }
-      if (collected.length === 0) return;
-
-      const currentUserId = useAuthStore.getState().user?.id ?? "";
-      const incoming: IncomingMessage[] = collected.map((message) => ({ message }));
-      queryClient.setQueryData<MessagesData>(messagesQueryKey(roomId), (old) =>
-        upsertMessages(old, incoming, currentUserId),
-      );
-    },
-    [queryClient],
   );
 
   // ---- Connection lifecycle ----

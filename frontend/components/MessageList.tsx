@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { Loader2, MessageSquare } from "lucide-react";
 
@@ -33,7 +33,7 @@ const NEAR_BOTTOM_THRESHOLD = 120;
 // until a row actually renders and reports its real measured height —
 // wrong values here just cost a slightly-off scrollbar/total-size briefly,
 // never a layout bug.
-const ESTIMATED_ROW_HEIGHT = 76;
+const ESTIMATED_ROW_HEIGHT = 60;
 
 function isNearBottom(el: HTMLDivElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD;
@@ -49,6 +49,7 @@ interface RowProps {
   isRoomAdmin: boolean;
   onDelete: (messageId: string) => void;
   onEdit: (messageId: string, content: string) => void;
+  showReadReceipt: boolean;
   measureElement: (el: Element | null) => void;
   observeMessage: (el: HTMLElement | null, messageId: string) => void;
 }
@@ -68,6 +69,7 @@ const Row = memo(function Row({
   isRoomAdmin,
   onDelete,
   onEdit,
+  showReadReceipt,
   measureElement,
   observeMessage,
 }: RowProps) {
@@ -83,7 +85,7 @@ const Row = memo(function Row({
     <div
       data-index={item.index}
       ref={setRefs}
-      className="absolute inset-x-0 px-6 py-2"
+      className="absolute inset-x-0 px-6 py-1"
       style={{ transform: `translateY(${item.start}px)` }}
     >
       <MessageBubble
@@ -95,6 +97,7 @@ const Row = memo(function Row({
         isRoomAdmin={isRoomAdmin}
         onDelete={onDelete}
         onEdit={onEdit}
+        showReadReceipt={showReadReceipt}
       />
     </div>
   );
@@ -153,6 +156,23 @@ export function MessageList({
   });
 
   const observeMessage = useReadReceipts(containerEl, messages);
+
+  // Only the single most-recent own message that's been read shows a "Read"
+  // indicator (implying every earlier own message was read too), rather than
+  // repeating it under every bubble. messages is sorted ascending by
+  // created_at, so the last matching entry is the newest one. Passed to each
+  // Row as a boolean rather than the raw id so memoized rows only re-render
+  // when their own flag flips (the old and new "last read" bubbles), not all
+  // of them whenever the id changes.
+  const lastReadOwnMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.user.id === currentUserId && !m.status && m.read_by.length > 0) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [messages, currentUserId]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -283,6 +303,7 @@ export function MessageList({
                 isRoomAdmin={isRoomAdmin}
                 onDelete={onDelete}
                 onEdit={onEdit}
+                showReadReceipt={message.id === lastReadOwnMessageId}
                 measureElement={virtualizer.measureElement}
                 observeMessage={observeMessage}
               />
