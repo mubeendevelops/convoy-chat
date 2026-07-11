@@ -374,4 +374,3 @@ backups, rate limiting, graceful shutdown).
   This is an accepted, documented tradeoff (XSS-readable tokens) rather than
   an oversight — the refresh token's rotation-with-reuse-detection design
   (see `plan.md`) bounds how long a stolen one stays useful, rather than
-  preventing theft outright.

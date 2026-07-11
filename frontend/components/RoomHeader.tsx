@@ -65,7 +65,7 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
       <div className="flex min-w-0 flex-1 items-center gap-1 md:gap-3">
         <MobileSidebarTrigger />
         <h1 className="min-w-0 truncate text-lg font-semibold">{displayName}</h1>
-        <Badge variant="secondary" className="hidden shrink-0 sm:inline-flex">
+        <Badge variant="secondary" className="hidden shrink-0 lg:inline-flex">
           {roomTypeLabel(room.type)}
         </Badge>
       </div>
@@ -99,7 +99,7 @@ export function RoomHeader({ room, currentUserId }: { room: RoomDetail; currentU
           <DialogTrigger asChild>
             <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground hover:text-destructive">
               <LogOut className="h-4 w-4" />
-              <span className="hidden sm:inline">{leaveLabel}</span>
+              <span className="hidden lg:inline">{leaveLabel}</span>
             </Button>
           </DialogTrigger>
           <DialogContent>

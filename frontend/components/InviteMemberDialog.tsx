@@ -69,7 +69,7 @@ export function InviteMemberDialog({ roomId, roomName }: { roomId: string; roomN
       <DialogTrigger asChild>
         <Button variant="ghost" size="sm" className="gap-2">
           <UserPlus className="h-4 w-4" />
-          <span className="hidden sm:inline">Invite</span>
+          <span className="hidden lg:inline">Invite</span>
         </Button>
       </DialogTrigger>
       <DialogContent>
