@@ -28,11 +28,12 @@ const (
 type Hub struct {
 	logger *slog.Logger
 
-	register   chan *Client
-	unregister chan *Client
-	join       chan roomSubscription
-	leave      chan roomSubscription
-	broadcast  chan Broadcast
+	register      chan *Client
+	unregister    chan *Client
+	join          chan roomSubscription
+	leave         chan roomSubscription
+	broadcast     chan Broadcast
+	userBroadcast chan UserBroadcast
 
 	// done is closed when Run returns so that callers trying to hand the Hub a
 	// command during shutdown unblock instead of leaking a goroutine.
@@ -49,10 +50,23 @@ type Hub struct {
 	// SetPresenceNotifier; read only from the Run goroutine thereafter.
 	presence presenceNotifier
 
+	// userSubscriber (optional) is told when a user's last local connection
+	// disconnects, so its Redis user:{id} subscription tracks local interest,
+	// the same way subscriber does for rooms. Set once before Run via
+	// SetUserSubscriber; read only from the Run goroutine thereafter.
+	userSubscriber userSubscriber
+
 	// clients and rooms are owned exclusively by the Run goroutine. Never read
 	// or write them from anywhere else.
 	clients map[*Client]struct{}
 	rooms   map[uuid.UUID]map[*Client]struct{}
+
+	// users indexes locally-connected clients by user_id, independent of room
+	// membership — every registered client sits in its own userID's set for
+	// the life of the connection (no explicit join/leave, unlike rooms). This
+	// is what lets UserBroadcast reach a user who has never joined any room's
+	// channel yet — see UserBroadcast and store.UserSubscription.
+	users map[uuid.UUID]map[*Client]struct{}
 }
 
 type roomSubscription struct {
@@ -70,6 +84,15 @@ type Broadcast struct {
 	Payload []byte
 }
 
+// UserBroadcast is Broadcast's per-user counterpart: an event to deliver to
+// every local connection belonging to UserID, regardless of which rooms (if
+// any) those connections have joined. Also fed only by the Broker's Redis
+// subscription, for the same single-delivery-path reason as Broadcast.
+type UserBroadcast struct {
+	UserID  uuid.UUID
+	Payload []byte
+}
+
 // roomSubscriber is notified when this server loses a room's last local
 // client, so it can drop the matching Redis subscription. Subscribing is
 // deliberately NOT symmetric — see Broker.EnsureSubscribed — a slightly-late
@@ -78,6 +101,15 @@ type Broadcast struct {
 // Implemented by *Broker; nil in tests or single-node setups without Redis.
 type roomSubscriber interface {
 	Unsubscribe(roomID uuid.UUID)
+}
+
+// userSubscriber is notified when this server loses a user's last local
+// connection, so it can drop the matching Redis user:{id} subscription.
+// Mirrors roomSubscriber exactly, one level up (per-user instead of
+// per-room). Implemented by *Broker; nil in tests or single-node setups
+// without Redis.
+type userSubscriber interface {
+	UnsubscribeUser(userID uuid.UUID)
 }
 
 // presenceNotifier is told when a client disconnects, along with the rooms it
@@ -94,18 +126,23 @@ func (h *Hub) SetSubscriber(s roomSubscriber) { h.subscriber = s }
 // SetPresenceNotifier wires presence/room-departure handling. Call once, before Run.
 func (h *Hub) SetPresenceNotifier(p presenceNotifier) { h.presence = p }
 
+// SetUserSubscriber wires the Redis per-user subscriber. Call once, before Run.
+func (h *Hub) SetUserSubscriber(s userSubscriber) { h.userSubscriber = s }
+
 // NewHub constructs a Hub. Call Run (once) to start its owning goroutine.
 func NewHub(logger *slog.Logger) *Hub {
 	return &Hub{
-		logger:     logger,
-		register:   make(chan *Client, registerBuffer),
-		unregister: make(chan *Client, registerBuffer),
-		join:       make(chan roomSubscription, commandBuffer),
-		leave:      make(chan roomSubscription, commandBuffer),
-		broadcast:  make(chan Broadcast, commandBuffer),
-		done:       make(chan struct{}),
-		clients:    make(map[*Client]struct{}),
-		rooms:      make(map[uuid.UUID]map[*Client]struct{}),
+		logger:        logger,
+		register:      make(chan *Client, registerBuffer),
+		unregister:    make(chan *Client, registerBuffer),
+		join:          make(chan roomSubscription, commandBuffer),
+		leave:         make(chan roomSubscription, commandBuffer),
+		broadcast:     make(chan Broadcast, commandBuffer),
+		userBroadcast: make(chan UserBroadcast, commandBuffer),
+		done:          make(chan struct{}),
+		clients:       make(map[*Client]struct{}),
+		rooms:         make(map[uuid.UUID]map[*Client]struct{}),
+		users:         make(map[uuid.UUID]map[*Client]struct{}),
 	}
 }
 
@@ -120,6 +157,12 @@ func (h *Hub) Run(ctx context.Context) {
 			return
 		case c := <-h.register:
 			h.clients[c] = struct{}{}
+			users := h.users[c.userID]
+			if users == nil {
+				users = make(map[*Client]struct{})
+				h.users[c.userID] = users
+			}
+			users[c] = struct{}{}
 			h.logger.Info("ws client registered", "user_id", c.userID, "clients", len(h.clients))
 		case c := <-h.unregister:
 			h.removeClient(c)
@@ -129,6 +172,8 @@ func (h *Hub) Run(ctx context.Context) {
 			h.removeFromRoom(sub.client, sub.roomID)
 		case b := <-h.broadcast:
 			h.deliver(b)
+		case b := <-h.userBroadcast:
+			h.deliverToUser(b)
 		}
 	}
 }
@@ -150,6 +195,16 @@ func (h *Hub) Leave(c *Client, roomID uuid.UUID) { h.enqueueSub(h.leave, c, room
 func (h *Hub) Broadcast(b Broadcast) {
 	select {
 	case h.broadcast <- b:
+	case <-h.done:
+	}
+}
+
+// BroadcastToUser enqueues an event for delivery to a user's local
+// connections. Called by the Broker's Redis subscription loop, same as
+// Broadcast — the only producer.
+func (h *Hub) BroadcastToUser(b UserBroadcast) {
+	select {
+	case h.userBroadcast <- b:
 	case <-h.done:
 	}
 }
@@ -184,11 +239,29 @@ func (h *Hub) removeClient(c *Client) {
 		rooms = append(rooms, roomID)
 		h.detach(roomID, c)
 	}
+	h.detachUser(c)
 	close(c.send)
 	if h.presence != nil {
 		h.presence.ClientDisconnected(c.userID, rooms)
 	}
 	h.logger.Info("ws client unregistered", "user_id", c.userID, "clients", len(h.clients))
+}
+
+// detachUser removes c from the per-user index, dropping the user's entry
+// entirely (and its Redis subscription, via userSubscriber) once their last
+// local connection is gone — mirrors detach's room-side logic exactly.
+func (h *Hub) detachUser(c *Client) {
+	users := h.users[c.userID]
+	if users == nil {
+		return
+	}
+	delete(users, c)
+	if len(users) == 0 {
+		delete(h.users, c.userID)
+		if h.userSubscriber != nil {
+			h.userSubscriber.UnsubscribeUser(c.userID)
+		}
+	}
 }
 
 func (h *Hub) addToRoom(c *Client, roomID uuid.UUID) {
@@ -240,6 +313,19 @@ func (h *Hub) detach(roomID uuid.UUID, c *Client) {
 // entries mid-range — removeClient does, via detach — is safe in Go.
 func (h *Hub) deliver(b Broadcast) {
 	for c := range h.rooms[b.RoomID] {
+		select {
+		case c.send <- b.Payload:
+		default:
+			h.logger.Warn("ws client dropped: send buffer full", "user_id", c.userID)
+			h.removeClient(c)
+		}
+	}
+}
+
+// deliverToUser fans a UserBroadcast out to a user's local connections.
+// Mirrors deliver exactly, indexed by user_id instead of room_id.
+func (h *Hub) deliverToUser(b UserBroadcast) {
+	for c := range h.users[b.UserID] {
 		select {
 		case c.send <- b.Payload:
 		default:

@@ -21,6 +21,14 @@ type subRequest struct {
 	ready chan error
 }
 
+// userSubRequest mirrors subRequest, one level up (per-user instead of
+// per-room) — see EnsureUserSubscribed.
+type userSubRequest struct {
+	userID    uuid.UUID
+	subscribe bool
+	ready     chan error
+}
+
 // Broker bridges the local Hub and Redis Pub/Sub for multi-server broadcast.
 // Outbound room events are Published to room:{id}. Subscribing is driven by
 // EnsureSubscribed (called from dispatch, before a room.join's publish —
@@ -45,15 +53,26 @@ type Broker struct {
 	// first local client) resolves instantly, with no Redis round trip.
 	sub        *store.RoomSubscription
 	subscribed map[uuid.UUID]struct{}
+
+	// userSubReqs/userSub/userSubscribed mirror subReqs/sub/subscribed
+	// exactly, one level up (per-user instead of per-room) — see
+	// EnsureUserSubscribed. A separate Redis Pub/Sub connection from sub's,
+	// same rationale as store.UserSubscription being separate from
+	// store.RoomSubscription.
+	userSubReqs    chan userSubRequest
+	userSub        *store.UserSubscription
+	userSubscribed map[uuid.UUID]struct{}
 }
 
 func NewBroker(st *store.Store, hub *Hub, logger *slog.Logger) *Broker {
 	return &Broker{
-		store:      st,
-		hub:        hub,
-		logger:     logger,
-		subReqs:    make(chan subRequest, subRequestBuffer),
-		subscribed: make(map[uuid.UUID]struct{}),
+		store:          st,
+		hub:            hub,
+		logger:         logger,
+		subReqs:        make(chan subRequest, subRequestBuffer),
+		subscribed:     make(map[uuid.UUID]struct{}),
+		userSubReqs:    make(chan userSubRequest, subRequestBuffer),
+		userSubscribed: make(map[uuid.UUID]struct{}),
 	}
 }
 
@@ -102,20 +121,59 @@ func (b *Broker) Unsubscribe(roomID uuid.UUID) {
 	}
 }
 
+// EnsureUserSubscribed mirrors EnsureSubscribed exactly, one level up: it
+// blocks until this server has a confirmed-active Redis subscription for
+// userID's personal channel — subscribing now if it doesn't already have
+// one. Called once per connection, synchronously before that connection's
+// readPump starts (see server.go's Handler) — a user-channel event is only
+// ever produced by another user's REST action, so unlike a room join there's
+// no equivalent "this connection's own next command" race to additionally
+// guard against, but the same "publish before subscribe lands is silently
+// dropped" hazard applies, hence the same synchronous-and-blocking shape.
+func (b *Broker) EnsureUserSubscribed(ctx context.Context, userID uuid.UUID) error {
+	ready := make(chan error, 1)
+	select {
+	case b.userSubReqs <- userSubRequest{userID: userID, subscribe: true, ready: ready}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-ready:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// UnsubscribeUser implements userSubscriber. The Hub calls it from its own
+// goroutine when a user's last local connection disconnects, so it only
+// enqueues the request (fire-and-forget) — mirrors Unsubscribe exactly.
+func (b *Broker) UnsubscribeUser(userID uuid.UUID) {
+	select {
+	case b.userSubReqs <- userSubRequest{userID: userID, subscribe: false}:
+	default:
+		// Best-effort — see Unsubscribe's identical rationale.
+		b.logger.Error("ws broker backlog full: user unsubscribe request dropped", "user_id", userID)
+	}
+}
+
 // Publish sends a room event to every subscribed server (this one included).
 // Callers run in per-connection goroutines, so blocking on Redis here is fine.
 func (b *Broker) Publish(ctx context.Context, roomID uuid.UUID, payload []byte) error {
 	return b.store.PublishRoomEvent(ctx, roomID, payload)
 }
 
-// Run owns the Redis subscription for this server's lifetime: it applies
-// subscribe/unsubscribe requests and forwards received events to the Hub. It
-// returns when ctx is cancelled (graceful shutdown).
+// Run owns the Redis subscriptions for this server's lifetime: it applies
+// room and user subscribe/unsubscribe requests and forwards received events
+// to the Hub. It returns when ctx is cancelled (graceful shutdown).
 func (b *Broker) Run(ctx context.Context) {
 	b.sub = b.store.NewRoomSubscription(ctx)
 	defer func() { _ = b.sub.Close() }()
+	b.userSub = b.store.NewUserSubscription(ctx)
+	defer func() { _ = b.userSub.Close() }()
 
 	messages := b.sub.Messages()
+	userMessages := b.userSub.Messages()
 
 	for {
 		select {
@@ -123,11 +181,18 @@ func (b *Broker) Run(ctx context.Context) {
 			return
 		case req := <-b.subReqs:
 			b.applySubRequest(ctx, req)
+		case req := <-b.userSubReqs:
+			b.applyUserSubRequest(ctx, req)
 		case msg, ok := <-messages:
 			if !ok {
 				return // subscription closed
 			}
 			b.hub.Broadcast(Broadcast{RoomID: msg.RoomID, Payload: msg.Payload})
+		case msg, ok := <-userMessages:
+			if !ok {
+				return // subscription closed
+			}
+			b.hub.BroadcastToUser(UserBroadcast{UserID: msg.UserID, Payload: msg.Payload})
 		}
 	}
 }
@@ -147,6 +212,30 @@ func (b *Broker) applySubRequest(ctx context.Context, req subRequest) {
 			b.subscribed[req.roomID] = struct{}{}
 		} else {
 			b.logger.Warn("ws redis subscription change failed", "room_id", req.roomID, "subscribe", true, "error", err)
+		}
+	}
+	if req.ready != nil {
+		req.ready <- err
+		close(req.ready)
+	}
+}
+
+// applyUserSubRequest mirrors applySubRequest exactly, one level up.
+func (b *Broker) applyUserSubRequest(ctx context.Context, req userSubRequest) {
+	if !req.subscribe {
+		if err := b.userSub.Unsubscribe(ctx, req.userID); err != nil {
+			b.logger.Warn("ws redis subscription change failed", "user_id", req.userID, "subscribe", false, "error", err)
+		}
+		delete(b.userSubscribed, req.userID)
+		return
+	}
+
+	var err error
+	if _, already := b.userSubscribed[req.userID]; !already {
+		if err = b.userSub.Subscribe(ctx, req.userID); err == nil {
+			b.userSubscribed[req.userID] = struct{}{}
+		} else {
+			b.logger.Warn("ws redis subscription change failed", "user_id", req.userID, "subscribe", true, "error", err)
 		}
 	}
 	if req.ready != nil {

@@ -346,6 +346,18 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
             markDeleted(old, event.id, event.deleted_at),
           );
           break;
+        case "room.invited":
+          // We've just gained active membership in a room we didn't have
+          // one in a moment ago (a DM's peer on first creation, a group's
+          // initial members, or an explicit invite) — published to our own
+          // personal channel (see CLAUDE.md) rather than the room's, since
+          // we've never joined that room's channel yet. Refetching ["rooms"]
+          // is the only thing needed here: once the new room lands in that
+          // list, the reconcile effect below (which watches `rooms`)
+          // automatically WS room.joins it and backfills its history via
+          // resyncRoom, exactly as if we'd had it all along.
+          queryClient.invalidateQueries({ queryKey: ["rooms"] });
+          break;
         case "member.role_changed":
           // Same treatment as user.joined/user.left: the room's cached
           // members[] (embedded in RoomDetail) is now stale for one member's

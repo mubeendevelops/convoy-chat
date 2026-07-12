@@ -160,10 +160,39 @@ func requireMemberOrSystemAdmin(w http.ResponseWriter, r *http.Request, s *store
 	return roomID, true
 }
 
+// roomInvitedEvent matches the new WS "room.invited" shape:
+// {"type","room_id"} — published to the added user's personal channel
+// (store.PublishUserEvent, not PublishRoomEvent) rather than the room's own
+// channel, since they haven't joined that channel yet and couldn't receive
+// anything sent there. Fired whenever a REST call gives someone new active
+// membership in a room they didn't already have one in: a direct room's
+// peer on first creation, a group's initial member_ids, and an explicit
+// invite. The payload is deliberately minimal (just enough to identify which
+// room) — the receiving client's job is only to invalidate its ["rooms"]
+// list and let a normal GET /rooms refetch supply the authoritative row.
+type roomInvitedEvent struct {
+	Type   string    `json:"type"`
+	RoomID uuid.UUID `json:"room_id"`
+}
+
+// publishRoomInvitedEvent is shared by CreateRoom (direct + group) and
+// InviteMember below — all three trigger the same "you now have access to a
+// room you didn't a moment ago" signal.
+func publishRoomInvitedEvent(ctx context.Context, s *store.Store, logger *slog.Logger, userID, roomID uuid.UUID) {
+	payload, err := json.Marshal(roomInvitedEvent{Type: "room.invited", RoomID: roomID})
+	if err != nil {
+		logger.Error("marshaling room.invited event failed", "user_id", userID, "room_id", roomID, "error", err)
+		return
+	}
+	if err := s.PublishUserEvent(ctx, userID, payload); err != nil {
+		logger.Warn("publishing room.invited event failed", "user_id", userID, "room_id", roomID, "error", err)
+	}
+}
+
 // CreateRoom handles POST /api/v1/rooms. type "channel" creates a named
 // room with the caller as admin; type "direct" gets-or-creates the 1:1 room
 // with peer_user_id (201 if newly created, 200 if it already existed).
-func CreateRoom(s *store.Store) http.HandlerFunc {
+func CreateRoom(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
@@ -216,6 +245,13 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 				return
 			}
 
+			// Only on genuine creation: if the DM already existed, the peer
+			// already has it in their room list from before, so there's
+			// nothing new to announce.
+			if created {
+				publishRoomInvitedEvent(r.Context(), s, logger, peerID, room.ID)
+			}
+
 			status := http.StatusOK
 			if created {
 				status = http.StatusCreated
@@ -250,6 +286,10 @@ func CreateRoom(s *store.Store) http.HandlerFunc {
 			if err != nil {
 				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create room")
 				return
+			}
+
+			for _, memberID := range memberIDs {
+				publishRoomInvitedEvent(r.Context(), s, logger, memberID, room.ID)
 			}
 
 			httpx.WriteJSON(w, http.StatusCreated, room)
@@ -357,7 +397,7 @@ type inviteRequest struct {
 // InviteMember handles POST /api/v1/rooms/{room_id}/invite. Admin-only.
 // Direct rooms have no admin member, so this naturally rejects invites to
 // them with the same 403 as any other non-admin caller.
-func InviteMember(s *store.Store) http.HandlerFunc {
+func InviteMember(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
 
@@ -400,6 +440,8 @@ func InviteMember(s *store.Store) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to add member")
 			return
 		}
+
+		publishRoomInvitedEvent(r.Context(), s, logger, inviteeID, roomID)
 
 		httpx.WriteJSON(w, http.StatusCreated, member)
 	}

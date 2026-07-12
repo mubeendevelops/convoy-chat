@@ -49,6 +49,7 @@ func NewServer(st *store.Store, secret string, origins []string, logger *slog.Lo
 	hub := NewHub(logger)
 	broker := NewBroker(st, hub, logger)
 	hub.SetSubscriber(broker)
+	hub.SetUserSubscriber(broker)
 
 	srv := &Server{
 		store:       st,
@@ -131,7 +132,22 @@ func (s *Server) Handler() http.HandlerFunc {
 		s.hub.Register(client)
 		go client.writePump()
 
-		// Must complete before readPump starts accepting inbound frames:
+		// Must complete before readPump starts: this connection needs an
+		// active Redis subscription on its own user:{id} channel before it
+		// can start doing anything else, or a REST action that lands in the
+		// gap (e.g. someone inviting this user into a brand-new room) would
+		// publish to a channel nothing is listening on yet and be silently
+		// dropped — the same "publish before subscribe lands" hazard
+		// EnsureSubscribed guards against for rooms, just applied at
+		// connect time since there's no equivalent explicit "join" event for
+		// a user's own channel.
+		uctx, ucancel := context.WithTimeout(s.runCtx, dbTimeout)
+		if err := s.broker.EnsureUserSubscribed(uctx, userID); err != nil {
+			s.logger.Warn("ws user-channel subscribe failed", "user_id", userID, "error", err)
+		}
+		ucancel()
+
+		// Must also complete before readPump starts accepting inbound frames:
 		// presenceOnline publishes this connection's "online" announcement,
 		// and readPump is what lets the client send its own next command
 		// (room.join, presence.update, ...). If readPump started first, a

@@ -343,4 +343,5 @@ export type ServerEvent =
   | { type: "message.edited"; id: string; room_id: string; content: string; edited_at: string }
   | { type: "message.deleted"; id: string; room_id: string; deleted_at: string }
   | { type: "member.role_changed"; room_id: string; user_id: string; role: MemberRole }
+  | { type: "room.invited"; room_id: string }
   | { type: "error"; code: WsErrorCode; message: string };

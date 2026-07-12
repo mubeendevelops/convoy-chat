@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { api, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
@@ -18,6 +18,7 @@ export function useAuth() {
   const hasHydrated = useAuthStore((s) => s.hasHydrated);
   const setAuth = useAuthStore((s) => s.setAuth);
   const clearAuth = useAuthStore((s) => s.clearAuth);
+  const queryClient = useQueryClient();
 
   const loginMutation = useMutation<AuthResponse, ApiError, LoginRequest>({
     mutationFn: (body) => api.post<AuthResponse>("/api/v1/auth/login", body, { auth: false }),
@@ -34,6 +35,17 @@ export function useAuth() {
   // it sitting anywhere else can't be used to silently re-auth. A network
   // failure here shouldn't block logging out locally, so it's swallowed
   // rather than surfaced; clearAuth() always runs.
+  //
+  // queryClient.clear() also always runs: the QueryClient (app/providers.tsx)
+  // is a single browser-tab-lifetime instance that survives client-side
+  // navigation between /login and /chat, so without this every query cache
+  // (["rooms"] and its unread_count in particular) would otherwise sit there
+  // untouched across a logout, and a subsequent login-without-a-hard-reload
+  // would serve that stale pre-logout snapshot for up to staleTime (60s)
+  // instead of refetching — the unread badge just wouldn't show messages
+  // sent while logged out until a manual refresh. Clearing on logout (rather
+  // than only invalidating on login) also avoids a stale-data flash if a
+  // different account logs in on the same tab next.
   async function logout() {
     const refreshToken = useAuthStore.getState().refreshToken;
     if (refreshToken) {
@@ -44,6 +56,7 @@ export function useAuth() {
       }
     }
     clearAuth();
+    queryClient.clear();
   }
 
   return {
