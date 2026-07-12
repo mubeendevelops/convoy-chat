@@ -369,10 +369,19 @@ func (s *Store) GetRoomByID(ctx context.Context, roomID uuid.UUID) (*models.Room
 }
 
 // ListRoomsForUser returns rooms userID is currently an active member of,
-// most recently joined first.
+// most recently joined first. Each room carries UnreadCount: the number of
+// messages newer than the member's last-read cursor (COALESCEd to joined_at
+// when never opened), excluding the caller's own and deleted messages. This
+// query has its own scan rather than reusing scanRoom, since it selects the
+// extra unread_count column.
 func (s *Store) ListRoomsForUser(ctx context.Context, userID uuid.UUID) ([]*models.Room, error) {
 	const q = `
-		SELECT r.id, r.name, r.type, r.creator_id, r.description, r.avatar_url, r.is_archived, r.created_at, r.updated_at, r.is_public
+		SELECT r.id, r.name, r.type, r.creator_id, r.description, r.avatar_url, r.is_archived, r.created_at, r.updated_at, r.is_public,
+		       (SELECT COUNT(*) FROM messages msg
+		         WHERE msg.room_id = r.id
+		           AND msg.deleted_at IS NULL
+		           AND msg.user_id <> $1
+		           AND msg.created_at > COALESCE(m.last_read_at, m.joined_at)) AS unread_count
 		FROM rooms r
 		JOIN room_members m ON m.room_id = r.id
 		WHERE m.user_id = $1 AND m.left_at IS NULL
@@ -386,17 +395,37 @@ func (s *Store) ListRoomsForUser(ctx context.Context, userID uuid.UUID) ([]*mode
 
 	rooms := make([]*models.Room, 0)
 	for rows.Next() {
-		room, err := scanRoom(rows)
-		if err != nil {
-			return nil, err
+		var rm models.Room
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Type, &rm.CreatorID, &rm.Description, &rm.AvatarURL, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt, &rm.IsPublic, &rm.UnreadCount); err != nil {
+			return nil, fmt.Errorf("scanning room for user: %w", err)
 		}
-		rooms = append(rooms, room)
+		rooms = append(rooms, &rm)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating rooms for user: %w", err)
 	}
 
 	return rooms, nil
+}
+
+// AdvanceLastRead stamps userID's last-read cursor in roomID to NOW(), marking
+// every message currently in the room as read for them — called when they open
+// the room (POST /rooms/{id}/read). Returns ErrNotFound if they aren't an
+// active member. Mirrors RemoveMember's WHERE left_at IS NULL / zero-rows idiom.
+func (s *Store) AdvanceLastRead(ctx context.Context, roomID, userID uuid.UUID) error {
+	const q = `
+		UPDATE room_members
+		SET last_read_at = NOW()
+		WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL`
+
+	tag, err := s.DB.Exec(ctx, q, roomID, userID)
+	if err != nil {
+		return fmt.Errorf("advancing last-read cursor: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // GetMembership returns the caller's active (not left) membership row for a

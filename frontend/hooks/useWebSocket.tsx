@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api, isAccessTokenExpiringSoon, refreshAccessToken } from "@/lib/api";
@@ -20,7 +20,8 @@ import {
   type MessagesData,
 } from "@/lib/messagesCache";
 import { usePresenceStore } from "@/lib/presence-store";
-import type { ClientEvent, MessageWithAuthor, ServerEvent } from "@/lib/types";
+import { useRooms } from "@/hooks/useRooms";
+import type { ClientEvent, MessageWithAuthor, Room, ServerEvent } from "@/lib/types";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/ws";
 
@@ -48,6 +49,9 @@ interface WebSocketContextValue {
   subscribe: <T extends ServerEventType>(type: T, handler: Handler<T>) => () => void;
   joinRoom: (roomId: string) => void;
   leaveRoom: (roomId: string) => void;
+  /** Record which room is currently on screen, so message.new can skip bumping
+   * its unread badge (and null it when no room is open). */
+  setActiveRoom: (roomId: string | null) => void;
   /** Skip the remaining backoff wait and retry immediately. A harmless no-op
    * if a connection attempt is already open or in flight. */
   reconnectNow: () => void;
@@ -65,6 +69,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const token = useAuthStore((s) => s.token);
   const hasHydrated = useAuthStore((s) => s.hasHydrated);
   const queryClient = useQueryClient();
+  // Reactive rooms list — drives the "stay subscribed to every room" reconcile
+  // effect below (deduped against RoomsList's own useRooms by React Query).
+  const rooms = useRooms().data;
 
   const [status, setStatus] = useState<ConnStatus>("connecting");
   const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
@@ -75,6 +82,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const intentionalCloseRef = useRef(false);
   const hasConnectedOnceRef = useRef(false);
   const joinedRoomsRef = useRef<Set<string>>(new Set());
+  // The room currently on screen (ChatWindow reports it via setActiveRoom).
+  // Read by routeEvent's message.new case to avoid bumping the active room's
+  // unread badge — a ref, not state, so updating it never re-renders.
+  const activeRoomRef = useRef<string | null>(null);
   // Guards only the pre-socket-creation gap introduced by the proactive
   // refresh below (an async await before `new WebSocket(...)` even runs) —
   // once a socket exists, the existing wsRef.current/readyState checks in
@@ -164,6 +175,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     [send],
   );
 
+  const setActiveRoom = useCallback((roomId: string | null) => {
+    activeRoomRef.current = roomId;
+  }, []);
+
   const reconnectNow = useCallback(() => {
     const ws = wsRef.current;
     // Already open or a handshake already in flight — forcing a second
@@ -210,6 +225,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           queryClient.setQueryData<MessagesData>(messagesQueryKey(roomId), (old) =>
             old ? upsertMessages(old, [incoming], currentUserId) : old,
           );
+          // Live unread badge: a message in a room we're not currently viewing,
+          // from someone other than us, bumps that room's cached unread_count.
+          // The active room is excluded (it's marked read on open, see
+          // ChatWindow/useMarkRoomRead), as are our own sends. Independent of
+          // the message-cache write above — the count lives in the ["rooms"]
+          // cache and updates even for rooms whose history isn't loaded yet.
+          if (roomId !== activeRoomRef.current && event.message.user.id !== currentUserId) {
+            queryClient.setQueryData<Room[]>(["rooms"], (old) =>
+              old?.map((room) =>
+                room.id === roomId ? { ...room, unread_count: (room.unread_count ?? 0) + 1 } : room,
+              ),
+            );
+          }
           break;
         }
         case "user.status_changed":
@@ -467,13 +495,39 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
   }, [token, hasHydrated, routeEvent, resyncRoom]);
 
-  return (
-    <WebSocketContext.Provider
-      value={{ status, hasConnectedOnce, send, subscribe, joinRoom, leaveRoom, reconnectNow }}
-    >
-      {children}
-    </WebSocketContext.Provider>
+  // Keep the socket subscribed to *every* room the caller belongs to — not just
+  // the one on screen — so message.new arrives for all of them and unread
+  // badges light up live. Reconciles joinedRoomsRef against the rooms list
+  // whenever the socket is open or the list changes: joins rooms not yet
+  // joined, leaves rooms that dropped out of the list (a leave/kick). Rooms
+  // stay joined for the whole session; the onopen re-join loop already covers
+  // reconnects, and joinRoom's own guard means re-running this is a cheap no-op.
+  useEffect(() => {
+    if (status !== "open" || !rooms) return;
+    const desired = new Set(rooms.map((room) => room.id));
+    desired.forEach((id) => {
+      if (!joinedRoomsRef.current.has(id)) joinRoom(id);
+    });
+    // Collect first, then leave — mutating joinedRoomsRef while iterating it
+    // (leaveRoom deletes from the set) is unsafe.
+    const toLeave: string[] = [];
+    joinedRoomsRef.current.forEach((id) => {
+      if (!desired.has(id)) toLeave.push(id);
+    });
+    toLeave.forEach((id) => leaveRoom(id));
+  }, [status, rooms, joinRoom, leaveRoom]);
+
+  // Memoized so the context value is stable across the provider's own
+  // re-renders — it now subscribes to the rooms list (for the reconcile effect
+  // above), which changes on every unread bump; without this every useWebSocket
+  // consumer would re-render on every incoming message. All the callbacks are
+  // stable, so this only changes when status/hasConnectedOnce actually change.
+  const value = useMemo(
+    () => ({ status, hasConnectedOnce, send, subscribe, joinRoom, leaveRoom, setActiveRoom, reconnectNow }),
+    [status, hasConnectedOnce, send, subscribe, joinRoom, leaveRoom, setActiveRoom, reconnectNow],
   );
+
+  return <WebSocketContext.Provider value={value}>{children}</WebSocketContext.Provider>;
 }
 
 export function useWebSocket(): WebSocketContextValue {

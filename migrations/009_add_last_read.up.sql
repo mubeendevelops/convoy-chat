@@ -1,0 +1,12 @@
+-- Per-member last-read cursor, backing the unread-message indicators. When a
+-- user opens a room, store.AdvanceLastRead stamps this to NOW(); the rooms-list
+-- query (store.ListRoomsForUser) counts messages newer than it (excluding the
+-- caller's own and deleted messages) as that room's unread_count. Nullable,
+-- mirroring left_at/banned_at's soft-state idiom: NULL means "never opened",
+-- and the count query COALESCEs it to joined_at, so a member's unread is
+-- everything since they joined until they first open the room. No backfill and
+-- no touching the membership-creation paths are needed.
+-- No index: the count subquery is keyed on messages(room_id, created_at), which
+-- migration 002 already covers; this column is only ever read for the row the
+-- UNIQUE(room_id, user_id) lookup already selects.
+ALTER TABLE room_members ADD COLUMN last_read_at TIMESTAMPTZ;

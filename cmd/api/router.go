@@ -70,6 +70,7 @@ func newRouter(cfg *config.Config, st *store.Store, wsServer *websocket.Server, 
 			r.Post("/rooms/{room_id}/invite", handlers.InviteMember(st))
 			r.Post("/rooms/{room_id}/join", handlers.JoinChannel(st, logger))
 			r.Post("/rooms/{room_id}/leave", handlers.LeaveRoom(st, logger))
+			r.Post("/rooms/{room_id}/read", handlers.MarkRoomRead(st))
 			r.With(handlers.RequireRoomAdmin(st)).Patch("/rooms/{room_id}/members/{user_id}/role", handlers.ChangeMemberRole(st, logger))
 			r.With(handlers.RequireRoomAdmin(st)).Delete("/rooms/{room_id}/members/{user_id}", handlers.RemoveMember(st, logger))
 

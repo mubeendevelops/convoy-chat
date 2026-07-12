@@ -506,6 +506,97 @@ func TestListMembers_And_ListRoomsForUser(t *testing.T) {
 	}
 }
 
+func TestListRoomsForUser_UnreadCount(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	member := mustCreateUser(t, s, "member")
+
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, err := s.AddMember(ctx, room.ID, member, models.RoleMember); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	unreadFor := func(userID uuid.UUID) int {
+		t.Helper()
+		rooms, err := s.ListRoomsForUser(ctx, userID)
+		if err != nil {
+			t.Fatalf("ListRoomsForUser: %v", err)
+		}
+		if len(rooms) != 1 {
+			t.Fatalf("got %d rooms, want 1", len(rooms))
+		}
+		return rooms[0].UnreadCount
+	}
+
+	// Fresh room, nothing sent → zero unread for everyone.
+	if got := unreadFor(member); got != 0 {
+		t.Errorf("fresh room unread = %d, want 0", got)
+	}
+
+	// The creator sends two messages. They don't count toward the creator's
+	// own unread, but they do count for the other member (who's never opened
+	// the room, so their cursor COALESCEs to joined_at).
+	msg1, err := s.InsertMessage(ctx, room.ID, creator, "hello", models.MessageTypeText)
+	if err != nil {
+		t.Fatalf("InsertMessage 1: %v", err)
+	}
+	if _, err := s.InsertMessage(ctx, room.ID, creator, "world", models.MessageTypeText); err != nil {
+		t.Fatalf("InsertMessage 2: %v", err)
+	}
+
+	if got := unreadFor(creator); got != 0 {
+		t.Errorf("own messages counted as unread: got %d, want 0", got)
+	}
+	if got := unreadFor(member); got != 2 {
+		t.Errorf("member unread = %d, want 2", got)
+	}
+
+	// A deleted message must not inflate the count.
+	if _, err := s.SoftDeleteMessage(ctx, msg1.ID); err != nil {
+		t.Fatalf("SoftDeleteMessage: %v", err)
+	}
+	if got := unreadFor(member); got != 1 {
+		t.Errorf("member unread after delete = %d, want 1", got)
+	}
+
+	// Marking the room read advances the cursor → back to zero.
+	if err := s.AdvanceLastRead(ctx, room.ID, member); err != nil {
+		t.Fatalf("AdvanceLastRead: %v", err)
+	}
+	if got := unreadFor(member); got != 0 {
+		t.Errorf("member unread after AdvanceLastRead = %d, want 0", got)
+	}
+
+	// A new message after the cursor counts again.
+	if _, err := s.InsertMessage(ctx, room.ID, creator, "again", models.MessageTypeText); err != nil {
+		t.Fatalf("InsertMessage 3: %v", err)
+	}
+	if got := unreadFor(member); got != 1 {
+		t.Errorf("member unread after new message = %d, want 1", got)
+	}
+}
+
+func TestAdvanceLastRead_NotAMember(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	creator := mustCreateUser(t, s, "creator")
+	outsider := mustCreateUser(t, s, "outsider")
+
+	room, err := s.CreateChannel(ctx, creator, "team", nil, true)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	err = s.AdvanceLastRead(ctx, room.ID, outsider)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("AdvanceLastRead for a non-member: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestListPublicChannels(t *testing.T) {
 	s := testutil.NewStore(t)
 	ctx := t.Context()

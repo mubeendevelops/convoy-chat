@@ -50,6 +50,11 @@ export interface Room {
   is_public: boolean;
   created_at: string;
   updated_at: string;
+  // Number of messages newer than the caller's last-read cursor (excludes
+  // their own and deleted messages). Only populated by GET /rooms (the list);
+  // other room responses omit/zero it. Kept live client-side by the WS
+  // provider's message.new handler and reset on open (see useMarkRoomRead).
+  unread_count?: number;
 }
 
 // GET /rooms/public row: a public, non-archived channel the caller isn't a

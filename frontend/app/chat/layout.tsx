@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import { ChatSidebarContent } from "@/components/ChatSidebar";
 import { ReconnectingBanner } from "@/components/ReconnectingBanner";
+import { UnreadTitle } from "@/components/UnreadTitle";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRequireAuth } from "@/hooks/useAuth";
@@ -48,6 +49,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   // being pushed off-screen.
   return (
     <WebSocketProvider>
+      <UnreadTitle />
       <div className="flex h-dvh flex-col bg-background text-foreground">
         <ReconnectingBanner />
         <div className="flex min-h-0 flex-1">

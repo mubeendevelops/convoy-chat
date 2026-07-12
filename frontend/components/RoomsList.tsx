@@ -18,30 +18,44 @@ const RoomRow = memo(function RoomRow({
   room,
   isActive,
   currentUserId,
+  unreadCount,
 }: {
   room: Room;
   isActive: boolean;
   currentUserId: string;
+  unreadCount: number;
 }) {
   // Bare Room (from the list endpoint) has no members embedded — only fetch
   // the detail for direct rooms, since that's the only case where the
   // display name needs it (channels already carry their own `name`).
   const detail = useRoom(room.type === "direct" ? room.id : undefined);
   const displayName = getRoomDisplayName(room, currentUserId, detail.data?.members);
+  const hasUnread = unreadCount > 0;
 
   return (
     <Link
       href={`/chat/${room.id}`}
       aria-current={isActive ? "page" : undefined}
       className={cn(
-        "block truncate rounded-md px-3 py-2 text-sm transition-colors",
+        "flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
         isActive
           ? "bg-primary text-primary-foreground"
           : "text-sidebar-foreground hover:bg-accent hover:text-accent-foreground",
       )}
     >
-      {displayName}
+      <span className={cn("truncate", hasUnread && "font-semibold")}>{displayName}</span>
+      {hasUnread && (
+        <span
+          aria-label={`${unreadCount} unread`}
+          className={cn(
+            "inline-flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full px-1.5 text-xs font-medium",
+            isActive ? "bg-primary-foreground text-primary" : "bg-primary text-primary-foreground",
+          )}
+        >
+          {unreadCount > 99 ? "99+" : unreadCount}
+        </span>
+      )}
     </Link>
   );
 });
@@ -89,6 +103,7 @@ export function RoomsList() {
                   room={room}
                   isActive={params.roomId === room.id}
                   currentUserId={user?.id ?? ""}
+                  unreadCount={room.unread_count ?? 0}
                 />
               ))}
             </div>
@@ -103,6 +118,7 @@ export function RoomsList() {
                   room={room}
                   isActive={params.roomId === room.id}
                   currentUserId={user?.id ?? ""}
+                  unreadCount={room.unread_count ?? 0}
                 />
               ))}
             </div>
@@ -119,6 +135,7 @@ export function RoomsList() {
                   room={room}
                   isActive={params.roomId === room.id}
                   currentUserId={user?.id ?? ""}
+                  unreadCount={room.unread_count ?? 0}
                 />
               ))}
             </div>

@@ -32,6 +32,34 @@ export function useRoom(roomId: string | undefined) {
   });
 }
 
+// Total unread across every room the caller is in — drives the mobile
+// hamburger badge and the browser-tab-title count. Reads straight off the
+// same ["rooms"] cache the sidebar renders, so it updates live as the WS
+// provider bumps per-room counts.
+export function useUnreadTotal() {
+  const { data } = useRooms();
+  return (data ?? []).reduce((sum, room) => sum + (room.unread_count ?? 0), 0);
+}
+
+// Marks a room read via POST /rooms/{id}/read, advancing the caller's
+// server-side last-read cursor. Optimistically zeroes that room's unread_count
+// in the ["rooms"] cache immediately (onMutate) so the badge clears the instant
+// the room is opened, no refetch needed. A failure is non-critical and stays
+// silent: the server cursor just isn't advanced, so the count reappears on the
+// next GET /rooms and clears again on the next open. Called from ChatWindow on
+// room open and close.
+export function useMarkRoomRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (roomId: string) => api.post<{ status: string }>(`/api/v1/rooms/${roomId}/read`),
+    onMutate: (roomId) => {
+      queryClient.setQueryData<Room[]>(["rooms"], (old) =>
+        old?.map((room) => (room.id === roomId ? { ...room, unread_count: 0 } : room)),
+      );
+    },
+  });
+}
+
 export function useCreateRoom() {
   const queryClient = useQueryClient();
   return useMutation({

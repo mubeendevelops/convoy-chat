@@ -602,6 +602,32 @@ func LeaveRoom(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	}
 }
 
+// MarkRoomRead handles POST /api/v1/rooms/{room_id}/read. It advances the
+// caller's last-read cursor to now, clearing the room's unread_count on their
+// next GET /rooms. Membership-gated the same way as LeaveRoom. No broadcast —
+// unread is a per-user view, so nobody else needs to know the caller caught up.
+func MarkRoomRead(s *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+
+		roomID, _, ok := requireActiveMembership(w, r, s, userID)
+		if !ok {
+			return
+		}
+
+		if err := s.AdvanceLastRead(r.Context(), roomID, userID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "you are not a member of this room")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to mark room read")
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "read"})
+	}
+}
+
 type changeRoleRequest struct {
 	Role string `json:"role"`
 }

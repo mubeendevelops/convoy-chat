@@ -36,6 +36,13 @@ type Room struct {
 	IsPublic  bool      `json:"is_public"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// UnreadCount is only populated by ListRoomsForUser (the GET /rooms list) —
+	// the number of messages in the room newer than the caller's last-read
+	// cursor, excluding their own and deleted messages. It's 0 on every other
+	// path that returns a Room (GetRoomByID, room creation, etc.), which is
+	// harmless: the field is always present, just always 0 where unread has no
+	// meaning.
+	UnreadCount int `json:"unread_count"`
 }
 
 // RoomMember is a raw room_members row.

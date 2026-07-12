@@ -9,6 +9,7 @@ import { RoomHeader } from "@/components/RoomHeader";
 import { TypingIndicator } from "@/components/TypingIndicator";
 import { useDeleteMessage, useEditMessage, useMessages, useSendMessage, useToggleReaction } from "@/hooks/useMessages";
 import { useRoomPresence } from "@/hooks/usePresence";
+import { useMarkRoomRead } from "@/hooks/useRooms";
 import { useTyping } from "@/hooks/useTyping";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { RoomDetail } from "@/lib/types";
@@ -24,7 +25,9 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
   const toggleReaction = useToggleReaction();
   const deleteMessage = useDeleteMessage(room.id);
   const editMessage = useEditMessage(room.id);
-  const { joinRoom, leaveRoom, subscribe } = useWebSocket();
+  const { setActiveRoom, subscribe } = useWebSocket();
+  const markRoomRead = useMarkRoomRead();
+  const markRead = markRoomRead.mutate;
   const { typingUserIds, notifyTyping, stopTyping } = useTyping(room.id);
 
   // Seed the presence store with this room's members' current statuses on open,
@@ -38,14 +41,22 @@ export function ChatWindow({ room, currentUserId }: { room: RoomDetail; currentU
   // is this room-level flag. A DM has no admin, so there only the author can.
   const isRoomAdmin = room.members.some((m) => m.user.id === currentUserId && m.role === "admin");
 
-  // Join this room's live stream while it's open; leave on switch/close. Since
-  // ChatWindow is keyed by room.id it remounts per room, so this is one clean
-  // join-on-open / leave-on-unmount. If the socket isn't open yet, the join is
-  // remembered and (re)sent by the provider once it connects.
+  // The provider now keeps this socket subscribed to *every* room the whole
+  // session (so unread badges update live), so ChatWindow no longer joins/
+  // leaves the live stream itself. Instead it reports which room is on screen
+  // — so message.new skips bumping this room's unread badge — and marks the
+  // room read on open and on close. Marking on close covers messages that
+  // arrived while it was the active room (excluded from the live bump), so a
+  // later reload doesn't resurface them. Keyed by room.id, ChatWindow remounts
+  // per room, so this is one clean open/close pair.
   useEffect(() => {
-    joinRoom(room.id);
-    return () => leaveRoom(room.id);
-  }, [room.id, joinRoom, leaveRoom]);
+    setActiveRoom(room.id);
+    markRead(room.id);
+    return () => {
+      setActiveRoom(null);
+      markRead(room.id);
+    };
+  }, [room.id, setActiveRoom, markRead]);
 
   // "Routed out live" for a kick (or a self-leave from another tab): the
   // central routeEvent handler in useWebSocket.tsx already does the
