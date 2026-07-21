@@ -298,38 +298,83 @@ func (s *Store) ListAllRooms(ctx context.Context, limit, offset int) ([]models.A
 
 // GetOrCreateDirectRoom returns the existing direct room between userA and
 // userB, or creates one if none exists yet. created is true only when a new
-// room was inserted. A Postgres advisory lock keyed on the sorted user pair
-// serializes concurrent attempts so two simultaneous requests can't create
-// two separate direct rooms for the same pair.
-func (s *Store) GetOrCreateDirectRoom(ctx context.Context, userA, userB uuid.UUID) (*models.Room, bool, error) {
+// room row was inserted; peerReactivated is true when userB specifically
+// (conventionally the "peer" from the caller/userA's point of view — see
+// handlers.CreateRoom) had left and was just reactivated, which the caller
+// needs to know since — unlike userA, who learns the outcome synchronously
+// from this call's own return — userB's own client has no other way to find
+// out. A Postgres advisory lock keyed on the sorted user pair serializes
+// concurrent attempts so two simultaneous requests can't create two separate
+// direct rooms for the same pair.
+//
+// The existence check matches on the pair having ever had membership rows in
+// a direct room together, regardless of left_at — not "both currently
+// active". A direct room structurally can only ever hold these exact two
+// users (nothing can invite a third person into one — see CLAUDE.md), so
+// this can't accidentally match a room that's grown or shrunk to a different
+// pair. Requiring both active (the original check) meant that once either
+// side left — "Leave conversation" is an intentional, labeled action for DMs,
+// not a mistake, see RoomHeader.tsx — this lookup stopped finding the room
+// at all: the leaver's next attempt to message the same peer forked a brand
+// new, disconnected room instead of resuming the old one, orphaning it with
+// the peer still active and sending into a conversation nobody could ever
+// see again. Any side found with left_at set is reactivated in place
+// (mirroring AddMember's reactivation upsert), so the SAME room and its full
+// history come back for whoever left.
+func (s *Store) GetOrCreateDirectRoom(ctx context.Context, userA, userB uuid.UUID) (room *models.Room, created, peerReactivated bool, err error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("beginning transaction: %w", err)
+		return nil, false, false, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	const lockStmt = `SELECT pg_advisory_xact_lock(hashtextextended(least($1::text, $2::text) || ':' || greatest($1::text, $2::text), 0))`
 	if _, err := tx.Exec(ctx, lockStmt, userA, userB); err != nil {
-		return nil, false, fmt.Errorf("acquiring direct-room lock: %w", err)
+		return nil, false, false, fmt.Errorf("acquiring direct-room lock: %w", err)
 	}
 
 	const findStmt = `
 		SELECT ` + roomColumns + `
 		FROM rooms r
 		WHERE r.type = 'direct'
-		  AND EXISTS (SELECT 1 FROM room_members WHERE room_id = r.id AND user_id = $1 AND left_at IS NULL)
-		  AND EXISTS (SELECT 1 FROM room_members WHERE room_id = r.id AND user_id = $2 AND left_at IS NULL)
-		  AND (SELECT COUNT(*) FROM room_members WHERE room_id = r.id AND left_at IS NULL) = 2`
+		  AND EXISTS (SELECT 1 FROM room_members WHERE room_id = r.id AND user_id = $1)
+		  AND EXISTS (SELECT 1 FROM room_members WHERE room_id = r.id AND user_id = $2)
+		ORDER BY r.created_at ASC
+		LIMIT 1`
 
-	room, err := scanRoom(tx.QueryRow(ctx, findStmt, userA, userB))
+	room, err = scanRoom(tx.QueryRow(ctx, findStmt, userA, userB))
 	if err == nil {
-		if err := tx.Commit(ctx); err != nil {
-			return nil, false, fmt.Errorf("committing transaction: %w", err)
+		const reactivateStmt = `
+			UPDATE room_members
+			SET left_at = NULL, joined_at = NOW()
+			WHERE room_id = $1 AND user_id = ANY($2) AND left_at IS NOT NULL
+			RETURNING user_id`
+		rows, qErr := tx.Query(ctx, reactivateStmt, room.ID, []uuid.UUID{userA, userB})
+		if qErr != nil {
+			return nil, false, false, fmt.Errorf("reactivating direct room membership: %w", qErr)
 		}
-		return room, false, nil
+		reactivatedB := false
+		for rows.Next() {
+			var reactivatedUserID uuid.UUID
+			if scanErr := rows.Scan(&reactivatedUserID); scanErr != nil {
+				rows.Close()
+				return nil, false, false, fmt.Errorf("scanning reactivated direct room member: %w", scanErr)
+			}
+			if reactivatedUserID == userB {
+				reactivatedB = true
+			}
+		}
+		rows.Close()
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, false, false, fmt.Errorf("iterating reactivated direct room members: %w", rowsErr)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, false, fmt.Errorf("committing transaction: %w", err)
+		}
+		return room, false, reactivatedB, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
-		return nil, false, err
+		return nil, false, false, err
 	}
 
 	newRoom := &models.Room{
@@ -346,21 +391,21 @@ func (s *Store) GetOrCreateDirectRoom(ctx context.Context, userA, userB uuid.UUI
 	err = tx.QueryRow(ctx, insertRoomStmt, newRoom.ID, newRoom.Type, newRoom.CreatorID).
 		Scan(&newRoom.IsArchived, &newRoom.IsPublic, &newRoom.CreatedAt, &newRoom.UpdatedAt)
 	if err != nil {
-		return nil, false, fmt.Errorf("inserting direct room: %w", err)
+		return nil, false, false, fmt.Errorf("inserting direct room: %w", err)
 	}
 
 	if err := insertMember(ctx, tx, newRoom.ID, userA, models.RoleMember); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if err := insertMember(ctx, tx, newRoom.ID, userB, models.RoleMember); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, false, fmt.Errorf("committing transaction: %w", err)
+		return nil, false, false, fmt.Errorf("committing transaction: %w", err)
 	}
 
-	return newRoom, true, nil
+	return newRoom, true, false, nil
 }
 
 func (s *Store) GetRoomByID(ctx context.Context, roomID uuid.UUID) (*models.Room, error) {

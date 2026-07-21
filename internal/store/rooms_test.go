@@ -54,24 +54,30 @@ func TestGetOrCreateDirectRoom(t *testing.T) {
 	alice := mustCreateUser(t, s, "alice")
 	bob := mustCreateUser(t, s, "bob")
 
-	room1, created1, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	room1, created1, peerReactivated1, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
 	if err != nil {
 		t.Fatalf("GetOrCreateDirectRoom (first call): %v", err)
 	}
 	if !created1 {
 		t.Error("expected created=true on the first call")
 	}
+	if peerReactivated1 {
+		t.Error("expected peerReactivated=false on the first call (nothing to reactivate)")
+	}
 	if room1.Type != models.RoomTypeDirect {
 		t.Errorf("got type %q, want %q", room1.Type, models.RoomTypeDirect)
 	}
 
 	t.Run("second call from the same caller dedupes", func(t *testing.T) {
-		room2, created2, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+		room2, created2, peerReactivated2, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
 		if err != nil {
 			t.Fatalf("GetOrCreateDirectRoom: %v", err)
 		}
 		if created2 {
 			t.Error("expected created=false on the second call")
+		}
+		if peerReactivated2 {
+			t.Error("expected peerReactivated=false: neither side had left")
 		}
 		if room2.ID != room1.ID {
 			t.Errorf("got a different room id %s, want %s", room2.ID, room1.ID)
@@ -79,17 +85,105 @@ func TestGetOrCreateDirectRoom(t *testing.T) {
 	})
 
 	t.Run("reversed argument order dedupes to the same room", func(t *testing.T) {
-		room3, created3, err := s.GetOrCreateDirectRoom(ctx, bob, alice)
+		room3, created3, peerReactivated3, err := s.GetOrCreateDirectRoom(ctx, bob, alice)
 		if err != nil {
 			t.Fatalf("GetOrCreateDirectRoom: %v", err)
 		}
 		if created3 {
 			t.Error("expected created=false when the peer calls back")
 		}
+		if peerReactivated3 {
+			t.Error("expected peerReactivated=false: neither side had left")
+		}
 		if room3.ID != room1.ID {
 			t.Errorf("got a different room id %s, want %s", room3.ID, room1.ID)
 		}
 	})
+}
+
+// TestGetOrCreateDirectRoom_ReactivatesAfterCallerLeft is a regression test
+// for the "leaving a DM orphans it" bug: once the caller (userA) has left
+// the direct room, calling GetOrCreateDirectRoom for the same pair again
+// must resume the SAME room (not fork a new one) and restore the caller's
+// own active membership — not just report created=false while leaving them
+// permanently absent from the room GetOrCreateDirectRoom itself returns.
+func TestGetOrCreateDirectRoom_ReactivatesAfterCallerLeft(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	alice := mustCreateUser(t, s, "reactivate_alice")
+	bob := mustCreateUser(t, s, "reactivate_bob")
+
+	original, _, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	if err != nil {
+		t.Fatalf("GetOrCreateDirectRoom (initial): %v", err)
+	}
+
+	if err := s.RemoveMember(ctx, original.ID, alice); err != nil {
+		t.Fatalf("alice leaving: %v", err)
+	}
+	if _, err := s.GetMembership(ctx, original.ID, alice); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("alice's membership after leaving: got err %v, want ErrNotFound", err)
+	}
+	// Bob's own membership must be completely untouched by alice leaving.
+	if _, err := s.GetMembership(ctx, original.ID, bob); err != nil {
+		t.Fatalf("bob's membership should be unaffected by alice leaving: %v", err)
+	}
+
+	again, created, peerReactivated, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	if err != nil {
+		t.Fatalf("GetOrCreateDirectRoom (after alice left): %v", err)
+	}
+	if created {
+		t.Error("expected created=false — the room already existed, it should be resumed, not forked")
+	}
+	if peerReactivated {
+		t.Error("expected peerReactivated=false — bob (the peer/userB) never left, alice (the caller) did")
+	}
+	if again.ID != original.ID {
+		t.Errorf("got a different room id %s, want the original %s — leaving must not fork a duplicate DM", again.ID, original.ID)
+	}
+
+	if _, err := s.GetMembership(ctx, original.ID, alice); err != nil {
+		t.Errorf("alice should be an active member again after resuming: %v", err)
+	}
+}
+
+// TestGetOrCreateDirectRoom_ReactivatesAndFlagsPeer covers the mirror image:
+// the *peer* (userB) had left, and the still-present caller (userA) starts
+// the conversation again. The peer's own membership must be silently
+// restored server-side, and peerReactivated must come back true so the
+// handler knows to give the peer a live nudge — their own client has no
+// other way to learn they're back in a room they thought they'd left.
+func TestGetOrCreateDirectRoom_ReactivatesAndFlagsPeer(t *testing.T) {
+	s := testutil.NewStore(t)
+	ctx := t.Context()
+	alice := mustCreateUser(t, s, "reactivate_peer_alice")
+	bob := mustCreateUser(t, s, "reactivate_peer_bob")
+
+	original, _, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	if err != nil {
+		t.Fatalf("GetOrCreateDirectRoom (initial): %v", err)
+	}
+	if err := s.RemoveMember(ctx, original.ID, bob); err != nil {
+		t.Fatalf("bob leaving: %v", err)
+	}
+
+	again, created, peerReactivated, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	if err != nil {
+		t.Fatalf("GetOrCreateDirectRoom (after bob left): %v", err)
+	}
+	if created {
+		t.Error("expected created=false — the room already existed")
+	}
+	if !peerReactivated {
+		t.Error("expected peerReactivated=true — bob (userB/the peer) was the one who left")
+	}
+	if again.ID != original.ID {
+		t.Errorf("got a different room id %s, want the original %s", again.ID, original.ID)
+	}
+	if _, err := s.GetMembership(ctx, original.ID, bob); err != nil {
+		t.Errorf("bob should be an active member again: %v", err)
+	}
 }
 
 // TestGetOrCreateDirectRoom_ConcurrentDedup is a regression test for the
@@ -111,7 +205,7 @@ func TestGetOrCreateDirectRoom_ConcurrentDedup(t *testing.T) {
 	for i := range attempts {
 		go func(i int) {
 			defer wg.Done()
-			room, created, err := s.GetOrCreateDirectRoom(ctx, dave, erin)
+			room, created, _, err := s.GetOrCreateDirectRoom(ctx, dave, erin)
 			if err == nil {
 				roomIDs[i] = room.ID
 				createdFlags[i] = created
@@ -388,7 +482,7 @@ func TestPromoteOldestIfNoAdmins(t *testing.T) {
 	t.Run("no-ops on a direct room even with zero admins (DMs have none by design)", func(t *testing.T) {
 		alice := mustCreateUser(t, s, "dm_alice")
 		bob := mustCreateUser(t, s, "dm_bob")
-		dm, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+		dm, _, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
 		if err != nil {
 			t.Fatalf("GetOrCreateDirectRoom: %v", err)
 		}
@@ -416,7 +510,7 @@ func TestListAllRooms(t *testing.T) {
 	if _, err := s.AddMember(ctx, channel.ID, bob, models.RoleMember); err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
-	dm, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
+	dm, _, _, err := s.GetOrCreateDirectRoom(ctx, alice, bob)
 	if err != nil {
 		t.Fatalf("GetOrCreateDirectRoom: %v", err)
 	}
@@ -617,7 +711,7 @@ func TestListPublicChannels(t *testing.T) {
 		t.Fatalf("CreateChannel(private): %v", err)
 	}
 
-	if _, _, err := s.GetOrCreateDirectRoom(ctx, creator, browser); err != nil {
+	if _, _, _, err := s.GetOrCreateDirectRoom(ctx, creator, browser); err != nil {
 		t.Fatalf("GetOrCreateDirectRoom: %v", err)
 	}
 

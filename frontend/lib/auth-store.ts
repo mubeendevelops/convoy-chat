@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
@@ -43,3 +44,25 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 );
+
+// Reconciles hasHydrated from a mount effect. onRehydrateStorage above fires
+// during persist's synchronous rehydration at import time — before React has
+// mounted and subscribed — so in Next.js's App Router hydration path that flag
+// flip can be missed, leaving every route guard (and the root redirect in
+// app/page.tsx) stuck on its loading skeleton until a manual refresh. This
+// hook, mounted once at the top of the tree (app/providers.tsx), guarantees
+// the flag reflects persist's real hydration state: localStorage is synchronous
+// so rehydration is already done by the time this effect runs (the common
+// case), and onFinishHydration covers any async completion after mount.
+export function useHydrateAuthStore() {
+  useEffect(() => {
+    const markHydrated = () => {
+      if (!useAuthStore.getState().hasHydrated) {
+        useAuthStore.getState().setHasHydrated(true);
+      }
+    };
+    const unsub = useAuthStore.persist.onFinishHydration(markHydrated);
+    if (useAuthStore.persist.hasHydrated()) markHydrated();
+    return unsub;
+  }, []);
+}

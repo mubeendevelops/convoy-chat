@@ -239,16 +239,19 @@ func CreateRoom(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 				return
 			}
 
-			room, created, err := s.GetOrCreateDirectRoom(r.Context(), userID, peerID)
+			room, created, peerReactivated, err := s.GetOrCreateDirectRoom(r.Context(), userID, peerID)
 			if err != nil {
 				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create direct room")
 				return
 			}
 
-			// Only on genuine creation: if the DM already existed, the peer
-			// already has it in their room list from before, so there's
-			// nothing new to announce.
-			if created {
+			// The peer needs a live nudge in two cases: a genuinely new room
+			// (they've never seen it) or one where *they* specifically had
+			// left and were just reactivated (their own view never changed
+			// on its own, unlike the caller's — see GetOrCreateDirectRoom's
+			// doc comment on the former "leaving a DM orphans it" bug). A
+			// plain dedup where neither side had left needs nothing new.
+			if created || peerReactivated {
 				publishRoomInvitedEvent(r.Context(), s, logger, peerID, room.ID)
 			}
 
