@@ -8,9 +8,18 @@ import { ReconnectingBanner } from "@/components/ReconnectingBanner";
 import { UnreadTitle } from "@/components/UnreadTitle";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAutoAway } from "@/hooks/useAutoAway";
 import { useRequireAuth } from "@/hooks/useAuth";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { useUIStore } from "@/lib/store";
+
+// Thin wrapper so useAutoAway (which depends on WebSocketProvider via
+// useSelfPresence → useWebSocket) can be called inside the provider tree
+// without ChatLayout itself needing to be a child of WebSocketProvider.
+function AutoAwayEffect() {
+  useAutoAway();
+  return null;
+}
 
 // Auth guard (Phase 10) + the two-pane chat shell (Phase 11): a fixed
 // sidebar (rooms list + user/theme/logout footer) and a main pane that
@@ -49,6 +58,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   // being pushed off-screen.
   return (
     <WebSocketProvider>
+      <AutoAwayEffect />
       <UnreadTitle />
       <div className="flex h-dvh flex-col bg-background text-foreground">
         <ReconnectingBanner />

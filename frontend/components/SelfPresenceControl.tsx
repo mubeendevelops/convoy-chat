@@ -12,6 +12,11 @@ import { cn } from "@/lib/utils";
 // yourself. The chosen status drives your own presence dot everywhere
 // (usePresence special-cases the current user) and is re-asserted on
 // reconnect, so picking Away sticks even across a socket blip.
+//
+// Away is also set automatically by useAutoAway (hooks/useAutoAway.ts) after
+// 5 minutes of inactivity. Clicking this control always overrides it: picking
+// Online cancels the auto-away for the current idle window; picking Away sets
+// it immediately (same end state the timer would have reached anyway).
 export function SelfPresenceControl() {
   const { selfStatus, setSelfStatus } = useSelfPresence();
   const next = selfStatus === "online" ? "away" : "online";
@@ -20,7 +25,11 @@ export function SelfPresenceControl() {
     <button
       type="button"
       onClick={() => setSelfStatus(next)}
-      title={`Set yourself ${STATUS_LABEL[next]}`}
+      title={
+        next === "away"
+          ? "Set yourself Away (also set automatically after 5 min of inactivity)"
+          : "Set yourself Online"
+      }
       className="mt-0.5 flex items-center gap-1.5 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       <span className={cn("h-2 w-2 shrink-0 rounded-full", STATUS_COLOR[selfStatus])} />
